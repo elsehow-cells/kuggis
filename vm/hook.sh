@@ -16,7 +16,13 @@ else
   input=$(cat)
   field=.message
   mkdir -p ~/.box/state
+  prev=$(cat ~/.box/state/"$name" 2>/dev/null)
   echo "$state" >~/.box/state/"$name"
+  # Other sessions' status bars show who's waiting; redraw them now.
+  if [ "$state" != "$prev" ]; then
+    tmux list-clients -F '#{client_name}' 2>/dev/null |
+      while read -r c; do tmux refresh-client -S -t "$c"; done >/dev/null 2>&1
+  fi
 fi
 
 case $state in waiting | ping) ;; *) exit 0 ;; esac

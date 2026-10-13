@@ -25,6 +25,11 @@ integration handles git and `gh` for one repo), your SSH keys, API keys.
 `vm/` is copied to `~/.box` on each VM by `kuggis sync`; `profiles/<project>.sh`
 holds per-project setup (`box_setup` once, `box_worktree` per session).
 
+Inside a session, the tmux bar shows `project · session` in a colour fixed
+per project, any other session on that VM that is waiting on you (`⚑ name 10m`),
+and whether the worktree has uncommitted or unpushed work. `✓ pushed` means
+`kuggis done` will go through. Terminal tabs are titled `project/session`.
+
 The tool and its laptop config (`~/.config/kuggis`) are `kuggis`. The on-VM
 plumbing deliberately kept the `box` prefix — the on-VM dir (`~/.box`), the
 `BOX_*` session variables and the `box` VM tag — because renaming those would

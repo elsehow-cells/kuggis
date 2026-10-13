@@ -43,7 +43,8 @@ grep -qxF '.claude/worktrees/' "$REPO/.git/info/exclude" 2>/dev/null ||
   echo '.claude/worktrees/' >>"$REPO/.git/info/exclude"
 mkdir -p "$REPO/.claude/worktrees" ~/.box/state ~/inbox ~/.claude
 
-# User settings: box owns these keys and the four hook events.
+# User settings: box owns these keys and the four hook events. The theme
+# follows the laptop terminal's light/dark mode.
 s=~/.claude/settings.json
 [ -s "$s" ] || echo '{}' >"$s"
 jq --arg h "$HOME/.box/hook.sh" --arg mode "$BOX_MODE" --argjson prefs "${BOX_CLAUDE_PREFS:-{\}}" '
@@ -51,6 +52,7 @@ jq --arg h "$HOME/.box/hook.sh" --arg mode "$BOX_MODE" --argjson prefs "${BOX_CL
   del(.apiKeyHelper, .env.ANTHROPIC_BASE_URL, .env.ANTHROPIC_API_KEY)
   | . + $prefs
   | .disableClaudeAiConnectors = true
+  | .theme = "auto"
   | .permissions.defaultMode = $mode
   | .hooks.UserPromptSubmit = hook("working")
   | .hooks.PostToolUse = hook("working")
@@ -67,7 +69,7 @@ c=~/.claude.json
 jq --arg r "$REPO" '
   .projects[$r].hasTrustDialogAccepted = true
   | .hasCompletedOnboarding = true
-  | .theme = (.theme // "dark")
+  | del(.theme)
 ' "$c" >"$c.tmp" && mv "$c.tmp" "$c"
 
 # Both agents get box's instructions as a marked block appended to their
@@ -84,7 +86,10 @@ for f in ~/.claude/CLAUDE.md ~/.codex/AGENTS.md; do
   if [ -s "$f" ] && [ -n "$(tail -n1 "$f")" ]; then echo >>"$f"; fi
   printf '%s\n' "$block" >>"$f"
 done
-if [ ! -f ~/.tmux.conf ] || head -1 ~/.tmux.conf | grep -q "^# box"; then cp ~/.box/tmux.conf ~/.tmux.conf; fi
+if [ ! -f ~/.tmux.conf ] || head -1 ~/.tmux.conf | grep -q "^# box"; then
+  { cat ~/.box/tmux.conf; printf "set -g @box_project '%s'\n" "$BOX_PROJECT"; } >~/.tmux.conf
+  tmux source-file ~/.tmux.conf 2>/dev/null || true # a running server picks it up now
+fi
 
 # Codex talks to exe.dev's `codex` LLM integration (your ChatGPT sign-in,
 # held by exe.dev), so no OpenAI credential lands here. box owns this file;
