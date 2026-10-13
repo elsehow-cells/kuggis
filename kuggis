@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# kuggis — Claude Code sessions on exe.dev VMs. One VM per project; one
+# session per name, which is a tmux session plus a git worktree on the VM.
+#
+#   kuggis                           list every session on every VM
+#   kuggis <project> [name] [--codex]
+#                                    attach to a session, starting it if needed;
+#                                    --codex starts Codex instead of Claude
+#   kuggis done <project> <name> [--force]
+#                                    end a session and remove its worktree
+#   kuggis put [project] [session] [file]
+#                                    upload a file (default: the clipboard image,
+#                                    else your latest screenshot) to ~/inbox on
+#                                    the VM; types the path into the session if
+#                                    one is named, else copies it
+#   kuggis new <project> <owner/repo> [--vm NAME] [--profile NAME]
+#           [--cpu N] [--memory M] [--disk D]
+#                                    create the VM, grant it the repo, set it up
+#   kuggis sync [project]            push scripts, token, settings and secrets
+#                                    (~/.config/box/secrets/<project>.env) again
+#   kuggis sh <project> [cmd...]     plain ssh to the VM
+#   kuggis token                     mint a Claude token into the keychain
+set -euo pipefail
+
+CONF=${BOX_CONFIG:-$HOME/.config/box}
+MAP=$CONF/vms # one line per project: <project> <vm> <owner/repo> <profile|->
+SELF=$0
+[ -L "$SELF" ] && SELF=$(readlink "$SELF")
+HERE=$(cd "$(dirname "$SELF")" && pwd)
+KEYCHAIN_SERVICE=box-claude-token
+# Keepalives make a connection frozen by sleep give up ~45s after wake.
+SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
+
+die() { echo "kuggis: $*" >&2; exit 1; }
+row() { [ -f "$MAP" ] && awk -v p="$1" '$1 == p' "$MAP" || true; }
+projects() { [ -f "$MAP" ] && awk 'NF && $1 !~ /^#/ { print $1 }' "$MAP" || true; }
+host_of() {
+  local r; r=$(row "$1")
+  [ -n "$r" ] || die "unknown project '$1' (projects live in $MAP)"
+  echo "$(awk '{ print $2 }' <<<"$r").exe.xyz"
+}
+check_name() {
+  [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || die "bad session name '$1' (letters, digits, - and _)"
+}
+# Tokens copied out of a terminal often pick up a space where the line wrapped.
+token() {
+  local t
+  t=$(security find-generic-password -s "$KEYCHAIN_SERVICE" -w 2>/dev/null | tr -d '[:space:]')
+  [ -n "$t" ] || die "no Claude token in the keychain: run kuggis token"
+  printf '%s\n' "$t"
+}
+remote() { local host=$1; shift; ssh "${SSH_OPTS[@]}" "$host" "$@"; }
+
+cmd_ls() {
+  local ps p tmp
+  ps=$(projects)
+  [ -n "$ps" ] || die "no VMs yet: kuggis new <project> <owner/repo>"
+  tmp=$(mktemp -d)
+  trap "rm -rf '$tmp'" EXIT
+  for p in $ps; do
+    (remote "$(host_of "$p")" '~/.box/session.sh status' >"$tmp/$p" 2>/dev/null ||
+      printf -- '-\tunreachable\t-\n' >"$tmp/$p") &
+  done
+  wait
+  {
+    printf 'PROJECT\tSESSION\tSTATE\tAGE\n'
+    for p in $ps; do
+      if [ -s "$tmp/$p" ]; then
+        sed "s/^/$p	/" "$tmp/$p"
+      else
+        printf '%s\t-\tno sessions\t-\n' "$p"
+      fi
+    done
+  } | column -t -s "$(printf '\t')"
+}
+
+cmd_attach() {
+  local p='' name='' agent='' a host
+  for a in "$@"; do
+    case $a in
+      --codex) agent=codex ;;
+      --claude) agent=claude ;;
+      -*) die "unknown flag $a" ;;
+      *)
+        if [ -z "$p" ]; then p=$a
+        elif [ -z "$name" ]; then name=$a
+        else die "usage: kuggis <project> [name] [--codex]"
+        fi ;;
+    esac
+  done
+  [ -n "$p" ] || die "usage: kuggis <project> [name] [--codex]"
+  host=$(host_of "$p")
+  if [ -z "$name" ]; then
+    # shellcheck disable=SC2046
+    set -- $(remote "$host" '~/.box/session.sh status' | cut -f1)
+    case $# in
+      0) die "no sessions on $p yet: kuggis $p <name>" ;;
+      1) name=$1 ;;
+      *) PS3="session: "; select name in "$@"; do [ -n "$name" ] && break; done ;;
+    esac
+  fi
+  check_name "$name"
+  # ssh exits 255 when the connection drops (sleep, network change, `~.`).
+  # Once a session has been up a while, keep reattaching until it comes back;
+  # a first attempt that fails fast is a real error and ends here.
+  local rc t0 live=0
+  while :; do
+    t0=$(date +%s) rc=0
+    ssh -t "${SSH_OPTS[@]}" "$host" "~/.box/session.sh attach $name $agent" || rc=$?
+    [ "$rc" -eq 255 ] || return "$rc"
+    [ $(($(date +%s) - t0)) -lt 30 ] || live=1
+    [ "$live" = 1 ] || exit 255
+    echo "kuggis: lost $host, reconnecting to $name (ctrl-c to stop)" >&2
+    sleep 3
+  done
+}
+
+cmd_done() {
+  [ $# -ge 2 ] || die "usage: kuggis done <project> <name> [--force]"
+  check_name "$2"
+  case ${3:-} in '' | --force) ;; *) die "unknown flag $3" ;; esac
+  remote "$(host_of "$1")" "~/.box/session.sh done $2 ${3:-}"
+}
+
+cmd_put() {
+  local file='' p='' s='' a tmp='' dir base dest home path
+  for a in "$@"; do
+    if [ -f "$a" ]; then file=$a
+    elif [ -z "$p" ]; then p=$a
+    elif [ -z "$s" ]; then s=$a
+    else die "usage: kuggis put [project] [session] [file]"
+    fi
+  done
+  if [ -z "$p" ]; then
+    # shellcheck disable=SC2046
+    set -- $(projects)
+    [ $# -eq 1 ] || die "which project? kuggis put <project> [session] [file]"
+    p=$1
+  fi
+  [ -z "$s" ] || check_name "$s"
+  host=$(host_of "$p")
+  if [ -z "$file" ]; then
+    tmp=$(mktemp -d)
+    trap "rm -rf '$tmp'" EXIT
+    if osascript -e "set f to open for access POSIX file \"$tmp/clipboard.png\" with write permission" \
+      -e 'write (the clipboard as «class PNGf») to f' -e 'close access f' >/dev/null 2>&1; then
+      file=$tmp/clipboard.png
+    else
+      dir=$(defaults read com.apple.screencapture location 2>/dev/null || echo "$HOME/Desktop")
+      dir=${dir/#\~/$HOME}
+      file=$(ls -t "$dir"/Screen* 2>/dev/null | head -1 || true)
+      [ -n "$file" ] || die "no file given, no image on the clipboard, no screenshot in $dir"
+    fi
+  fi
+  base=$(basename "$file" | LC_ALL=C tr -c 'A-Za-z0-9._\n-' '_')
+  dest=inbox/$(date +%Y%m%d-%H%M%S)-$base
+  home=$(remote "$host" 'mkdir -p ~/inbox && echo $HOME')
+  scp -q "${SSH_OPTS[@]}" "$file" "$host:$dest"
+  path=$home/$dest
+  if [ -n "$s" ]; then
+    remote "$host" "tmux send-keys -t '=$s:' -l -- '$path '" ||
+      die "uploaded $path, but could not type it into session $s"
+    echo "typed into $p/$s: $path"
+  else
+    printf %s "$path" | pbcopy
+    echo "copied: $path"
+  fi
+}
+
+wait_ssh() {
+  local i
+  for i in $(seq 1 45); do
+    ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "$1" true 2>/dev/null && return 0
+    sleep 2
+  done
+  die "$1 never answered ssh"
+}
+
+cmd_new() {
+  local p='' repo='' vm='' profile='' extra=()
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --vm) vm=$2; shift 2 ;;
+      --profile) profile=$2; shift 2 ;;
+      --cpu | --memory | --disk) extra+=("$1=$2"); shift 2 ;;
+      -*) die "unknown flag $1" ;;
+      *)
+        if [ -z "$p" ]; then p=$1
+        elif [ -z "$repo" ]; then repo=$1
+        else die "usage: kuggis new <project> <owner/repo> [--vm NAME] [--profile NAME]"
+        fi
+        shift ;;
+    esac
+  done
+  [ -n "$p" ] && [ -n "$repo" ] || die "usage: kuggis new <project> <owner/repo> [--vm NAME] [--profile NAME]"
+  [[ $p =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "project names are lowercase letters, digits and -"
+  case $p in ls | new | sync | sh | put | done | token | help) die "'$p' is a kuggis command" ;; esac
+  [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "repo must be owner/name"
+  [ -z "$(row "$p")" ] || die "$p already exists in $MAP"
+  vm=${vm:-$p}
+  [[ $vm =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "VM names are lowercase letters, digits and -"
+  profile=${profile:-$p}
+  [ -f "$HERE/profiles/$profile.sh" ] || profile=-
+  token >/dev/null
+  remote exe.dev integrations setup github --list | grep -q 'No GitHub accounts' &&
+    die "link GitHub to exe.dev first: ssh exe.dev integrations setup github"
+
+  echo "creating VM ${vm}…"
+  remote exe.dev "new --name=$vm --tag=box --no-email --comment=box:$repo ${extra[*]+${extra[*]}}"
+  echo "granting $vm access to ${repo}…"
+  # As exe.dev's bot, not as you: with main protected, the VM can push branches
+  # and open PRs but can't approve or merge its own.
+  remote exe.dev "integrations add github --name=gh-$vm --repository=$repo --attach=vm:$vm"
+  mkdir -p "$CONF"
+  echo "$p $vm $repo $profile" >>"$MAP"
+  wait_ssh "$vm.exe.xyz"
+  sync_one "$p"
+  echo "ready: kuggis $p <session-name>"
+}
+
+sync_one() {
+  local p=$1 r vm repo profile host
+  r=$(row "$p")
+  [ -n "$r" ] || die "unknown project '$p'"
+  read -r _ vm repo profile <<<"$r"
+  host=$vm.exe.xyz
+  echo "syncing $p ($host)…"
+  COPYFILE_DISABLE=1 tar --no-xattrs -C "$HERE/vm" -cf - . |
+    remote "$host" 'mkdir -p ~/.box && tar -C ~/.box -xf - 2>/dev/null'
+  if [ "$profile" != - ]; then
+    remote "$host" 'cat >~/.box/profile.sh' <"$HERE/profiles/$profile.sh"
+  else
+    remote "$host" 'rm -f ~/.box/profile.sh'
+  fi
+  # Agent notes for this project, appended to kuggis's CLAUDE.md block.
+  if [ "$profile" != - ] && [ -f "$HERE/profiles/$profile.md" ]; then
+    remote "$host" 'cat >~/.box/profile.md' <"$HERE/profiles/$profile.md"
+  else
+    remote "$host" 'rm -f ~/.box/profile.md'
+  fi
+  # Per-project secrets (KEY=value lines), exported into every session.
+  local secrets=$CONF/secrets/$p.env
+  if [ -f "$secrets" ]; then
+    [ "$(stat -f %Lp "$secrets")" = 600 ] || echo "kuggis: warning: $secrets is readable by others (chmod 600 it)" >&2
+    remote "$host" 'umask 077 && cat >~/.box/secrets.env' <"$secrets"
+  else
+    remote "$host" 'rm -f ~/.box/secrets.env'
+  fi
+  token | remote "$host" 'umask 077 && cat >~/.box/token'
+  {
+    printf 'BOX_PROJECT=%q\n' "$p"
+    printf 'BOX_REPO=%q\n' "$repo"
+    printf 'BOX_MODE=%q\n' "${BOX_MODE:-auto}"
+    printf 'BOX_NTFY=%q\n' "$(cat "$CONF/ntfy" 2>/dev/null || true)"
+    printf 'BOX_GIT_NAME=%q\n' "$(git config --global user.name)"
+    printf 'BOX_GIT_EMAIL=%q\n' "$(git config --global user.email)"
+    # Sessions use the same model and effort as Claude on this laptop.
+    printf 'BOX_CLAUDE_PREFS=%q\n' "$(jq -c '{model, effortLevel, alwaysThinkingEnabled}
+      | with_entries(select(.value != null))' ~/.claude/settings.json 2>/dev/null || echo '{}')"
+  } | remote "$host" 'cat >~/.box/config'
+  remote "$host" 'bash ~/.box/bootstrap.sh'
+}
+
+cmd_sync() {
+  local p
+  if [ $# -gt 0 ]; then sync_one "$1"; else for p in $(projects); do sync_one "$p"; done; fi
+}
+
+cmd_sh() {
+  local host; host=$(host_of "$1"); shift
+  exec ssh -t "${SSH_OPTS[@]}" "$host" "$@"
+}
+
+cmd_token() {
+  echo "kuggis: a browser opens for the Claude sign-in; copy the token it prints."
+  claude setup-token
+  local t
+  printf 'kuggis: paste the token (hidden): '
+  read -rs t
+  echo
+  t=$(printf %s "$t" | tr -d '[:space:]')
+  [[ $t == sk-ant-* ]] || die "that doesn't look like a Claude token"
+  security add-generic-password -U -a "$USER" -s "$KEYCHAIN_SERVICE" -w "$t"
+  echo "kuggis: stored. Push it to your VMs with: kuggis sync"
+}
+
+case ${1:-ls} in
+  ls) cmd_ls ;;
+  new) shift; cmd_new "$@" ;;
+  sync) shift; cmd_sync "$@" ;;
+  done) shift; cmd_done "$@" ;;
+  put) shift; cmd_put "$@" ;;
+  sh) shift; [ $# -ge 1 ] || die "usage: kuggis sh <project> [cmd...]"; cmd_sh "$@" ;;
+  token) cmd_token ;;
+  help | -h | --help) sed -n '2,/^set -e/p' "$SELF" | sed '$d; s/^# \{0,1\}//' ;;
+  --codex | --claude) cmd_attach "$@" ;;
+  -*) die "unknown flag $1 (kuggis help)" ;;
+  *) cmd_attach "$@" ;;
+esac

@@ -1,0 +1,47 @@
+# kuggis
+
+Claude Code sessions on exe.dev VMs: one VM per project, one tmux session
+and git worktree per session. Run `kuggis help` for the commands.
+
+Setup on the laptop, once:
+
+1. `ln -s ~/Projects/kuggis/kuggis ~/.local/bin/kuggis`
+2. `ssh exe.dev integrations setup github` — link GitHub to exe.dev
+3. `kuggis token` — mint a Claude token into the keychain
+4. Optional, for `--codex` sessions: `ssh exe.dev integrations setup chatgpt`,
+   then `ssh exe.dev integrations add llm --name codex --openai=chatgpt
+   --openai-account=<name> --anthropic=disabled --fireworks=disabled
+   --attach tag:box`. Codex then runs on your ChatGPT plan with no OpenAI
+   credential on the VM.
+5. Optional: put an ntfy topic in `~/.config/box/ntfy` and subscribe to it
+   on your phone, to get pinged when a session waits on you.
+
+Then `kuggis new <project> <owner/repo>` and `kuggis <project> <session>`.
+
+What lands on a VM: the Claude token (model requests only; claude.ai
+connectors stay off). What never does: a GitHub token (exe.dev's GitHub
+integration handles git and `gh` for one repo), your SSH keys, API keys.
+
+`vm/` is copied to `~/.box` on each VM by `kuggis sync`; `profiles/<project>.sh`
+holds per-project setup (`box_setup` once, `box_worktree` per session).
+
+The command, the config dir (`~/.config/box`), the on-VM dir (`~/.box`), the
+`BOX_*` variables and the `box` VM tag are deliberately unrelated names: the
+tool is `kuggis`, its plumbing kept the `box` prefix so the two live VMs
+weren't disturbed by the rename.
+
+## Recovery
+
+- **Laptop slept, terminal frozen.** The agent kept working on the VM, and
+  `kuggis` reattaches on its own once ssh gives up on the dead connection (~45s
+  after wake). Press Enter, `~`, `.` to skip the wait. Ctrl-C while it's
+  reconnecting stops it; detaching (`C-b d`) leaves without reconnecting.
+- **`kuggis` shows a session as `stopped`.** Its process is gone (VM restart, or
+  the agent exited). `kuggis <project> <name>` starts it again: the conversation
+  resumes (`claude --continue`, `codex resume --last`) and the worktree's files
+  are as they were. Whatever command was mid-run is lost, and the agent waits
+  for you, so tell it to carry on.
+- **`waiting on you`** means a permission prompt or a finished turn. You get an
+  ntfy ping unless you typed in that session in the last two minutes.
+- **`kuggis done` refuses.** The worktree has uncommitted or unpushed work. Push
+  it, or pass `--force` to discard it.
