@@ -596,10 +596,38 @@ thinker_log() { # thinker_log <repo> <n> [lines]
       if .type == "text" then .text
       elif .type == "tool_use" then "→ \(.name) \(.input.file_path // .input.pattern // .input.query // .input.url // "")"
       else empty end
+    elif .type == "system" and .subtype == "init" then "· the Thinker started (\(.model))"
     elif .type == "result" then
       "· finished in \((.duration_ms // 0) / 1000 | floor)s\(if .is_error then ", with an error: \(.result // .subtype)" else "" end)"
     else empty end' "$f" 2>/dev/null |
     sed 's|/Users/thinker/workspace/||g' | room_text | tail -n "${3:-12}"
+}
+
+# The Thinker's word on a PR, as a fixed-width badge for the list. A running
+# review is a solid cyan block (busy; orange is "waiting on you") whose spinner
+# turns with each refresh.
+thinker_badge() { # thinker_badge <repo> <n> <head commit> <review|"">
+  local t0 v i=' ' w c=$'\e[2m' N=$'\e[0m'
+  if t0=$(thinker_reviewing "$1" "$2"); then
+    i=$(cut -c$(($(date +%s) / 15 % 4 + 1)) <<<'◐◓◑◒')
+    printf '\e[1;38;5;16;48;5;80m %s %-12s %s' "$i" "reviewing $((($(date +%s) - t0) / 60))m" "$N"
+    return
+  fi
+  if thinker_came_back_empty "$1" "$2" "$3" "$4"; then
+    i=✗ w='no review' c=$'\e[31m'
+  elif [ -n "$4" ]; then
+    v=$(brief_field "$4" verdict | room_text)
+    case $v in
+      merge) i=✓ c=$'\e[32m' ;;
+      changes) i=✎ c=$'\e[33m' ;;
+      hold) i=‖ c=$'\e[35m' ;;
+    esac
+    w=${v:0:12}
+    [ -z "$(review_stale "$4" "$3")" ] || c=$'\e[2m' w="${v:0:7} (old)"
+  else
+    i=· w='not reviewed'
+  fi
+  printf '%s %s %-12s %s' "$c" "$i" "$w" "$N"
 }
 
 ask_thinker() { # ask_thinker <tsv row>
@@ -651,6 +679,7 @@ ask_diff() { # ask_diff <repo> <n> <folder>
 review_with_thinker() { # review_with_thinker <repo> <n> <state file prefix>
   local repo=$1 n=$2 f=$3 key ask head b up def stack='' prompt
   key=$(ask_key "$repo" "$n") ask=$ROOM_INBOX/asks/$(ask_key "$repo" "$n")
+  echo "· gathering $repo#$n: its description, the issues it closes, its diff"
   rm -rf "$ask"
   mkdir -p "$ask" || return 1
   head=$(gh pr view "$n" -R "$repo" --json headRefOid -q .headRefOid) && [ -n "$head" ] || return 1
@@ -676,6 +705,7 @@ review_with_thinker() { # review_with_thinker <repo> <n> <state file prefix>
   done
   chmod -R a+rX "$ask"
   echo "$head" >"$f.head"
+  echo "· ${stack:+stacked on$stack; }starting the Thinker (${KUGGIS_REVIEW_MODEL:-opus})"
   prompt="Review $repo#$n. Its title, description, branch, head commit and checks are in inbox/asks/$key/pr.md, with the issues it closes, if any; its diff is inbox/asks/$key/$n.diff."
   [ -z "$stack" ] || prompt="$prompt It is stacked on$stack: their diffs are in the same folder. Read them first, for context, but review only #$n."
   prompt="$prompt inbox/status.md lists the other open PRs. Write outbox/review-${repo#*/}-$n.md as your instructions describe, with head ${head:0:12}. Nobody is watching this run, so don't ask questions: if you can't decide, the verdict is hold, and say what would decide it."
@@ -687,23 +717,23 @@ review_with_thinker() { # review_with_thinker <repo> <n> <state file prefix>
 
 # A PR as you review it: its files, then the Thinker's review.
 pr_view() { # pr_view <tsv row>
-  local p repo n head sha base author checks title rev stale t0
+  local p repo n head sha base author checks title rev stale t0=
   IFS=$'\t' read -r p repo n head sha base author checks title <<<"$1"
   rev=$(review_for "$repo" "$n")
+  if t0=$(thinker_reviewing "$repo" "$n"); then
+    printf '\e[1;38;5;16;48;5;80m %s \e[0m\n' "THE THINKER IS REVIEWING THIS · since $(date -r "$t0" +%H:%M) · $((($(date +%s) - t0) / 60))m"
+    thinker_log "$repo" "$n" 15 | sed 's/^/  /'
+    echo
+  elif thinker_came_back_empty "$repo" "$n" "$sha" "$rev"; then
+    printf '\e[1;37;41m %s \e[0m\n' "THE THINKER'S LAST RUN ENDED WITHOUT A REVIEW OF THIS COMMIT"
+    thinker_log "$repo" "$n" 15 | sed 's/^/  /'
+    echo
+  fi
   echo "$repo#$n  $(room_text <<<"$title")"
   echo "by $author   $head → $base   head ${sha:0:12}   checks: $checks"
   gh pr view "$n" -R "$repo" --json additions,deletions,files \
     --jq '"\(.files | length) files, +\(.additions) −\(.deletions)", (.files[:25][] | "  +\(.additions) −\(.deletions)  \(.path)")' 2>/dev/null
   echo "────────────────────────────────────────────────────────────"
-  if t0=$(thinker_reviewing "$repo" "$n"); then
-    echo "The Thinker is reviewing this, since $(date -r "$t0" +%H:%M):"
-    thinker_log "$repo" "$n" | sed 's/^/  /'
-    echo
-  elif thinker_came_back_empty "$repo" "$n" "$sha" "$rev"; then
-    echo "The Thinker's last run ended without a review of this commit:"
-    thinker_log "$repo" "$n" | sed 's/^/  /'
-    echo
-  fi
   if [ -n "$rev" ]; then
     stale=$(review_stale "$rev" "$sha")
     echo "The Thinker: $(brief_field "$rev" verdict | room_text)${stale:+  STALE: $stale}"
@@ -711,7 +741,7 @@ pr_view() { # pr_view <tsv row>
     brief_flags "$rev" | sed 's/^/  /' | grep . || echo "  nothing unusual"
     echo
     awk 'NR == 1 && $0 == "---" { fm = 1; next } fm && $0 == "---" { fm = 0; next } !fm' "$rev" | room_text
-  else
+  elif [ -z "$t0" ]; then
     echo "No review from the Thinker yet: t (ctrl-t in the list) asks it for one."
   fi
 }
@@ -816,33 +846,46 @@ home_close() { # home_close <item line>
   [ "$kind" != session ] || close_session "$p" "$s"
 }
 
+# A project's colour: the same one its tmux bar uses on the VM (vm/status.sh).
+project_colour() {
+  local palette=(33 99 36 172 167 70 162 136 31 133) h
+  h=$(printf %s "$1" | cksum | cut -d' ' -f1)
+  echo "${palette[h % ${#palette[@]}]}"
+}
+
+# The home list, one line per item: kind, what you see, then the item's data.
+# Grouped by project, in ~/.config/kuggis/vms order, each row tagged in the
+# project's colour; within a project: briefs, PRs, then sessions, waiting on
+# you first.
 home_items() {
-  local f a p repo n head sha base author checks title rev v c s st age t0
-  local B=$'\e[1m' Y=$'\e[33m' R=$'\e[31m' G=$'\e[32m' D=$'\e[2m' N=$'\e[0m' T=$'\t'
-  for f in $(pending_briefs); do
-    a=$(brief_field "$f" agent)
-    echo "brief${T}${B}✉ brief${N}    $(brief_field "$f" project | room_text) / $(brief_field "$f" session | room_text) ${D}(${a:-claude})${N}${T}$f"
-  done
-  prs_tsv | while IFS=$'\t' read -r p repo n head sha base author checks title; do
-    rev=$(review_for "$repo" "$n") v="${D}no review${N}"
-    if t0=$(thinker_reviewing "$repo" "$n"); then
-      v="${Y}Thinker: reviewing… $((($(date +%s) - t0) / 60))m${N}"
-    elif thinker_came_back_empty "$repo" "$n" "$sha" "$rev"; then
-      v="${R}Thinker: no review (see preview)${N}"
-    elif [ -n "$rev" ]; then
-      v="Thinker: $(brief_field "$rev" verdict | room_text)"
-      [ -z "$(review_stale "$rev" "$sha")" ] || v="$v (stale)"
-    fi
-    case $checks in failing) c="${R}$checks${N}" ;; ok) c="${G}$checks${N}" ;; *) c=$checks ;; esac
-    echo "pr${T}${B}⇡ PR${N}       ${repo#*/} #$n  $(room_text <<<"$title")  ${D}·${N} $c ${D}·${N} $v${T}$p${T}$repo${T}$n${T}$head${T}$sha${T}$base${T}$author${T}$checks${T}$title"
-  done
-  # waiting on you first, then working, then the rest
-  sessions_tsv | awk -F'\t' '{ r = $3 ~ /^waiting/ ? 0 : $3 ~ /^working/ ? 1 : 2; print r "\t" $0 }' |
-    sort -s -t "${T}" -k1,1n | cut -f2- | while IFS=$'\t' read -r p s st age; do
-    [ "$s" != - ] || continue
-    case $st in "waiting on you"*) st="${Y}$st${N}" ;; working*) st="${G}$st${N}" ;; *) st="${D}$st${N}" ;; esac
-    echo "session${T}● $p / $s  $st ${D}$age${N}${T}$p${T}$s"
-  done
+  local f a p repo n head sha base author checks title rev c s st age w=0 ps
+  local B=$'\e[1m' R=$'\e[31m' G=$'\e[32m' D=$'\e[2m' N=$'\e[0m' T=$'\t'
+  local WAIT=$'\e[1;38;5;16;48;5;214m'
+  ps=$(projects)
+  for p in $ps; do [ ${#p} -le $w ] || w=${#p}; done
+  order() { local q k=0; for q in $ps; do [ "$q" != "$1" ] || { echo "$k"; return; }; k=$((k + 1)); done; echo 99; }
+  tag() { printf '\e[1;38;5;16;48;5;%sm %-*s \e[0m' "$(project_colour "$1")" "$w" "$1"; }
+  {
+    for f in $(pending_briefs); do
+      p=$(brief_field "$f" project | room_text) a=$(brief_field "$f" agent)
+      echo "$(order "$p")${T}0${T}brief${T}$(tag "$p") ${B}✉ $(printf '%-12s' "→ $(brief_field "$f" session | room_text)")${N} brief for ${a:-claude}${T}$f"
+    done
+    prs_tsv | while IFS=$'\t' read -r p repo n head sha base author checks title; do
+      rev=$(review_for "$repo" "$n")
+      case $checks in failing) c="${R}" ;; ok) c="${G}" ;; *) c="${D}" ;; esac
+      c="$c$(printf 'ci %-8s' "$checks")${N}"
+      # the Thinker and CI up front, so a narrow list still shows them
+      echo "$(order "$p")${T}1${T}pr${T}$(tag "$p") ${B}⇡ $(printf '%-12s' "PR #$n")${N} $(thinker_badge "$repo" "$n" "$sha" "$rev") $c $(room_text <<<"$title")${T}$p${T}$repo${T}$n${T}$head${T}$sha${T}$base${T}$author${T}$checks${T}$title"
+    done
+    sessions_tsv | while IFS=$'\t' read -r p s st age; do
+      case $st in
+        "waiting on you"*) echo "$(order "$p")${T}2${T}session${T}$(tag "$p") ${B}● $(printf '%-12s' "$s")${N} ${WAIT} ⚑ $st ${N} ${D}$age${N}${T}$p${T}$s" ;;
+        working*) echo "$(order "$p")${T}3${T}session${T}$(tag "$p") ● $(printf '%-12s' "$s")  ${G}$st${N} ${D}$age${N}${T}$p${T}$s" ;;
+        unreachable) echo "$(order "$p")${T}5${T}vm${T}$(tag "$p") ${R}✗ the VM didn't answer${N}${T}$p" ;;
+        *) [ "$s" = - ] || echo "$(order "$p")${T}4${T}session${T}$(tag "$p") ● $(printf '%-12s' "$s")  ${D}$st $age${N}${T}$p${T}$s" ;;
+      esac
+    done
+  } | sort -s -t "$T" -k1,1n -k2,2n | cut -f3-
 }
 
 home_preview() { # home_preview <item line>
@@ -851,6 +894,7 @@ home_preview() { # home_preview <item line>
   case $kind in
     brief) brief_view "$p" ;;
     pr) pr_view "$(cut -f3- <<<"$1")" ;;
+    vm) echo "$p: its VM didn't answer ssh. kuggis sh $p to look; kuggis ls to retry." ;;
     session)
       rows=${FZF_PREVIEW_LINES:-40}
       echo "$p / $s · enter attaches"
