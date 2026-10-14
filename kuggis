@@ -829,6 +829,7 @@ cmd_think() {
       local bin token
       bin=$(readlink -f "$(command -v claude)") || die "no claude on PATH"
       token=$(security find-generic-password -s "$KEYCHAIN_SERVICE" -w 2>/dev/null) || die "no Claude token yet: kuggis token"
+      [ "$(id -u)" != 0 ] || die "run kuggis think --setup as yourself, without sudo: it asks for sudo when it needs it"
       echo "kuggis: building the Thinker's room (sudo asks for your password)"
       printf '%s' "$token" | sudo "$HERE/think/setup.sh" "$USER" "$bin"
       ;;
