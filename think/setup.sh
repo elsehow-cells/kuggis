@@ -5,6 +5,7 @@
 set -euo pipefail
 [ "$(id -u)" = 0 ] || { echo "setup.sh: run as root (kuggis think --setup)" >&2; exit 1; }
 owner=${1:?owner} bin=${2:?claude binary}
+[ "$owner" != root ] && [ -d "/Users/$owner" ] || { echo "setup.sh: $owner is not a person with a home in /Users" >&2; exit 1; }
 here=$(cd "$(dirname "$0")" && pwd)
 room=/opt/kuggis-thinker user=thinker home=/Users/thinker
 token=$(tr -d '[:space:]')
