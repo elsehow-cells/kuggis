@@ -6,8 +6,8 @@
 #                                    open PRs with its reviews, every session;
 #                                    pick one to dispatch, merge or attach
 #   kuggis ls                        list every session on every VM
-#   kuggis web                       the same PRs, reviews and sessions in your
-#                                    browser: ask for reviews, read them, merge
+#   kuggis web                       cells and sessions in your browser;
+#                                    PR tools live on /reviews
 #   kuggis dispatch [--status]       review the Thinker's briefs one by one;
 #                                    --status only refreshes what it can read
 #   kuggis <project> [name] [--codex]
@@ -1064,6 +1064,34 @@ cmd_web() {
 # The open PR <repo>#<n>, as a prs_tsv row.
 pr_row() { prs_tsv | awk -F'\t' -v r="$1" -v n="$2" 'tolower($2) == tolower(r) && $3 == n' | head -n 1; }
 
+# A read-only source for the cell dashboard. No GitHub queries or automatic
+# Thinker reviews: opening the overview must not start paid model work.
+# Keep this adapter until the typed event fold can replace it.
+web_cells_snapshot() {
+  local p vm repo profile sessions f
+  sessions=$(sessions_tsv)
+  {
+    if [ -f "$MAP" ]; then
+      while read -r p vm repo profile; do
+        [ -n "$p" ] && [[ $p != \#* ]] || continue
+        printf 'project\t%s\t%s\n' "$p" "${profile:--}"
+      done <"$MAP"
+    fi
+    [ -z "$sessions" ] || sed 's/^/session\t/' <<<"$sessions"
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      printf 'brief\t%s\t%s\t%s\t%s\n' "$(basename "$f")" \
+        "$(brief_field "$f" project)" "$(brief_field "$f" session)" "$(stat -f %m "$f")"
+    done < <(pending_briefs)
+    [ ! -x /opt/kuggis-thinker/launch ] || printf 'thinker\n'
+    true
+  } | room_text | jq -Rn '[inputs | split("\t")] | {
+    projects: [.[] | select(.[0] == "project") | {name: .[1], profile: .[2]}],
+    sessions: [.[] | select(.[0] == "session") | {project: .[1], name: .[2], state: .[3], age: .[4]}],
+    briefs: [.[] | select(.[0] == "brief") | {id: .[1], project: .[2], session: .[3], since: (.[4] | tonumber)}],
+    thinker_installed: any(.[]; .[0] == "thinker"), now: (now | floor)}'
+}
+
 # Projects (with their tmux colour), open PRs with the Thinker's word on each,
 # and every session.
 web_state() {
@@ -1149,15 +1177,16 @@ web_send() { # web_send <repo> <n> <review hash>
   echo "sent the review to $p / $head"
 }
 
-web_api() { # kuggis _web <state | pr|log|ask <repo> <n> | merge|send <repo> <n> <hash> | close <project> <session>>
+web_api() { # kuggis _web <cells|state | pr|log|ask <repo> <n> | merge|send <repo> <n> <hash> | close <project> <session>>
   case ${1:-} in
-    state) ;;
+    state | cells) ;;
     close) [ -n "$(row "${2:-}")" ] || die "no project '${2:-}'" ;;
     *) [[ ${2:-} =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && ${3:-} =~ ^[0-9]+$ ]] || die "bad PR" ;;
   esac
   case ${1:-} in
     close) check_name "${3:-}"; act cmd_done "$2" "$3" </dev/null ;; # never --force: it refuses unpushed work
     state) web_state ;;
+    cells) web_cells_snapshot ;;
     pr) web_pr "$2" "$3" ;;
     log) web_log "$2" "$3" ;;
     ask)
@@ -1166,7 +1195,7 @@ web_api() { # kuggis _web <state | pr|log|ask <repo> <n> | merge|send <repo> <n>
       ask_thinker "$r" </dev/null ;;
     merge) [[ ${4:-} =~ ^[0-9a-f]{40}$ ]] || die "bad commit"; web_merge "$2" "$3" "$4" ;;
     send) [[ ${4:-} =~ ^[0-9a-f]{64}$ ]] || die "bad review hash"; web_send "$2" "$3" "$4" ;;
-    *) die "usage: kuggis _web state|pr|log|ask|merge|send|close" ;;
+    *) die "usage: kuggis _web cells|state|pr|log|ask|merge|send|close" ;;
   esac
 }
 
