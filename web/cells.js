@@ -15,7 +15,7 @@ function showDefinition(cell) {
   document.getElementById('definition-title').textContent = cell.name;
   const d = cell.definition;
   document.getElementById('definition-meta').replaceChildren(visible(d
-    ? `Read-only display definition · not enforced · SHA256 ${d.sha256}\n${d.source}`
+    ? `Read-only ${d.contract ? "development contract · isolation not certified" : "display definition · not enforced"} · SHA256 ${d.sha256}\n${d.source}`
     : 'Inferred display grouping · no enforced cell definition'));
   document.getElementById('definition-text').replaceChildren(visible(d?.text || JSON.stringify({
     cell: cell.name, projects: cell.projects, enforced: false,
@@ -50,7 +50,7 @@ function render() {
     name.addEventListener('click', () => showDefinition(cell));
     const heading = el('h2', null, name);
     if (cell.name === 'operator') heading.append(el('span', 'outside', 'outside cells'));
-    const section = el('section', 'cell', el('div', 'cell-header', heading, el('span', 'cell-state', cell.status)));
+    const section = el('section', 'cell', el('div', 'cell-header', heading, el('span', 'cell-state', `${cell.status} · ${cell.readiness || 'setup unverified'}`)));
     for (const row of cell.rows) {
       rowsById.set(row.id, row);
       const elapsed = row.since ? age(row.since, snapshot.now) : row.age;

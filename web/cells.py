@@ -6,14 +6,18 @@ here groups the UI; it grants no access and does not certify isolation.
 import hashlib
 import json
 import os
+from pathlib import Path
 import re
 import sys
 import unicodedata
-from pathlib import Path
+
+# Load only the sibling package in the installed checkout, never the working directory.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from cells import policy as contracts
 
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 RESERVED = {"operator", "unassigned", "home", "ls", "cells", "cell", "prs", "web",
-            "dispatch", "think", "new", "sync", "sh", "put", "done", "token", "help"}
+            "dispatch", "think", "new", "sync", "sh", "put", "done", "token", "help", "onboard", "reconcile", "audit", "adopt"}
 ORDER = ("trusted", "forecasting", "merrillfront-dev", "bigbrain-dev",
          "bigbrain-others", "hiring")
 DEFAULTS = {
@@ -82,16 +86,23 @@ def load_definitions(config):
     for path in sorted((Path(config) / "cells").glob("*.json")):
         raw = path.read_text()
         data = json.loads(raw)
-        if not isinstance(data, dict) or set(data) - {"version", "cell", "projects", "definition"}:
-            raise ValueError(f"{path.name}: invalid display definition")
-        name, projects = data.get("cell"), data.get("projects")
-        if (type(data.get("version")) is not int or data["version"] != 1
-                or not isinstance(name, str) or not NAME.fullmatch(name)
-                or name != path.stem or name in RESERVED
-                or not isinstance(projects, list)
-                or any(not isinstance(p, str) or not NAME.fullmatch(p) for p in projects)
-                or not isinstance(data.get("definition", {}), dict)):
-            raise ValueError(f"{path.name}: expected version 1, matching cell name and project names")
+        contract = isinstance(data, dict) and data.get("version") == 2
+        if contract:
+            contracts.validate(data)
+            name, projects = data["cell"], [p["name"] for p in data["projects"]]
+            if name != path.stem:
+                raise ValueError("contract filename must match cell name")
+        else:
+            if not isinstance(data, dict) or set(data) - {"version", "cell", "projects", "definition"}:
+                raise ValueError(f"{path.name}: invalid display definition")
+            name, projects = data.get("cell"), data.get("projects")
+            if (type(data.get("version")) is not int or data["version"] != 1
+                    or not isinstance(name, str) or not NAME.fullmatch(name)
+                    or name != path.stem or name in RESERVED
+                    or not isinstance(projects, list)
+                    or any(not isinstance(p, str) or not NAME.fullmatch(p) for p in projects)
+                    or not isinstance(data.get("definition", {}), dict)):
+                raise ValueError(f"{path.name}: expected version 1 display definition or version 2 contract")
         for project in projects:
             if project == "kuggis":
                 raise ValueError("kuggis belongs outside the cells")
@@ -100,7 +111,7 @@ def load_definitions(config):
             owners[project] = name
         definitions[name] = {
             "source": str(path), "sha256": hashlib.sha256(raw.encode()).hexdigest(),
-            "text": raw, "enforced": False,
+            "text": raw, "enforced": False, "contract": data if contract else None,
         }
     return definitions, owners
 
@@ -120,6 +131,21 @@ def project(snapshot, config):
         cell(name)
     for p in snapshot["projects"]:
         cell(mapping[p["name"]])["projects"].append(p["name"])
+
+    # A contract is desired state, never self-certifying readiness. Unregistered
+    # projects also stay visible, so partial onboarding cannot look complete.
+    for name, definition in definitions.items():
+        policy = definition.get("contract")
+        if not policy:
+            continue
+        for p in policy["projects"]:
+            if p["name"] not in cell(name)["projects"]:
+                cell(name)["projects"].append(p["name"])
+            state = contracts.cached(config, policy, p["name"], snapshot["now"])
+            cell(name)["rows"].append({"id": f"setup:{p['name']}", "kind": "setup",
+                "name": "development setup", "project": p["name"], "cell": name,
+                "state": state, "needs_you": not state.startswith("development verified"),
+                "command": f"kuggis audit {name}", "age": ""})
 
     # The source exposes only brief metadata, never brief contents or reviews.
     briefs = snapshot.get("briefs", [])
@@ -160,6 +186,10 @@ def project(snapshot, config):
     for name in sorted(cells, key=rank):
         c = cells[name]
         c["projects"].sort()
+        setup = [r for r in c["rows"] if r["kind"] == "setup"]
+        c["readiness"] = ("outside cells" if name == "operator" else
+                          "setup incomplete" if any(r["needs_you"] for r in setup) else
+                          "development verified; isolation not certified" if setup else "setup unverified")
         c["needs_you"] = sum(r["needs_you"] for r in c["rows"])
         working = sum(r["state"].startswith(("starting", "working", "running")) for r in c["rows"])
         status = []
@@ -202,7 +232,7 @@ def main():
     for c in cells:
         if mode == "definition":
             d = c["definition"]
-            print(safe(c["name"]) + " · not an enforced policy")
+            print(safe(c["name"]) + (" · development contract; isolation not certified" if d and d.get("contract") else " · not an enforced policy"))
             if d:
                 print(safe(d["source"]) + " · SHA256 " + d["sha256"])
                 # Preserve layout while escaping controls in file content.
@@ -212,7 +242,7 @@ def main():
         elif mode == "inventory":
             print(f"{c['name']:<20} {', '.join(c['projects']) or '(no VM projects)'}")
         else:
-            heading = f"{c['name']} · {c['status']}"
+            heading = f"{c['name']} · {c['status']} · {c['readiness']}"
             if mode == "items":
                 print("\t".join(["cell", safe(heading), c["name"], "-"]))
             else:
@@ -228,7 +258,7 @@ def main():
                 label = f"  {dot} {safe(who):<32} {safe(r['state'])} {safe(age)}".rstrip()
                 if mode == "items":
                     kind = r["kind"] if r["command"] else "invalid"
-                    print("\t".join([kind, label, safe(r["project"]), safe(r["name"])]))
+                    print("\t".join([kind, label, safe(r.get("cell", r["project"])), safe(r["name"])]))
                 else:
                     print(label)
             if mode != "items":

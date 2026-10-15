@@ -71,6 +71,109 @@ human review loop.
 Only a page holding the token in `~/.config/kuggis/web.token` can use the API;
 `kuggis web` opens it with that token. The themes are BigBrain's.
 
+### Verifiable development cells
+
+A version 1 cell file is only a display grouping. Version 2 is a development
+contract: every project inherits the same merge rule, review requirement,
+spending rule and owner-controlled crossings. `cells/contract.schema.json`
+defines its shape; `cells/forecasting.example.json` is a public example for
+AIRO and agent-box. Actual definitions live in private config, not this repo.
+No cell can include kuggis itself, share a VM with another project, or silently
+reassign an existing project to a different repo or machine.
+
+Preview onboarding from a reviewed definition:
+
+```sh
+kuggis onboard --policy cells/forecasting.example.json
+kuggis onboard --policy cells/forecasting.example.json --json
+# After reviewing the exact proposal, repeat with --apply <printed SHA256>.
+```
+
+Planning reads GitHub and VM configuration but changes neither. The plan names
+each development fork, its upstream, its VM, its explicit offline test command,
+and all proposed actions. Applying may create forks/VMs, deploy adapters, open
+CI setup PRs, and change GitHub protection; it requires the hash of the current
+plan. A changed policy, repository head, runtime installation or observed
+configuration invalidates that approval. Partial setup is saved as incomplete;
+rerunning the planner reports remaining work. Existing unmanaged VMs are never
+overwritten automatically. New forks explicitly name their upstream and owner.
+
+Onboarding has a deliberate prerequisite: the managed test and review workflows
+must be reviewed and merged, and tests green on the default branch **before**
+reconciliation removes human approval. The test workflow uses the distinct `cell-test`
+check, so it cannot collide with an existing `test` workflow. It has read-only
+repository permissions, no configured secrets, and pinned actions. The supplied
+test command runs in GitHub CI, never on the operator laptop; inspect it before
+applying. It must not make paid calls. Kuggis preserves existing unrelated boolean
+protections and stops for additional rulesets/access restrictions rather than
+silently removing them.
+
+```sh
+kuggis reconcile forecasting        # preview what still needs doing
+kuggis audit forecasting            # verify and refresh readiness; no remote changes
+```
+
+A managed project's merge rule is always squash, zero human PR approvals,
+`cell-test` and `cell-review` from GitHub Actions. A separate managed agent job
+on the VM supplies the review verdict. All three runtimes receive the same
+generated instructions. The reviewer records an exact-head verdict with
+`~/.box/pr-gate.py review PR HEAD pass|fail`; the author merges with
+`~/.box/pr-gate.py merge PR HEAD`. Missing, skipped, neutral, failing or pending
+checks block the helper. It refuses author self-review, pins the merge head,
+and confirms the merge. The operator audits branch protection before launch;
+GitHub enforces it at merge time. The VM bot cannot read administration settings.
+It also cannot write statuses, so the reviewer posts a bounded verdict comment.
+The review workflow accepts verdicts only from that bot, chooses the latest
+verdict for the current PR head, and publishes the status. It runs from the
+default branch with only issue/PR read and status-write permissions, without
+checking out PR code or using configured secrets. The merge helper requires the
+status to match the latest verdict, so an older pass cannot mask a newer failure.
+These are quality checks within the cell; a compromised cell can fabricate its
+own review, so they are not a
+security boundary.
+
+CLI and dashboard show incomplete setup, verification expiry, or **development
+verified; isolation not certified**. Readiness observations expire after 15
+minutes or any policy/runtime change. A failed audit invalidates earlier green
+observations. Starting a managed job performs a fresh verification; attaching
+to an already-running session remains available for recovery. The dashboard
+reads cached observations and never changes settings or starts reviews.
+
+The scope is development readiness, not the full security architecture: this
+release does not certify egress isolation, inspect every credential, enforce
+provider budgets, automatically carry publication/submission requests, or
+implement seal/unseal. Spending remains `ask`, and all declared crossings remain
+owner-operated. Legacy display groupings are explicitly **setup unverified**.
+There is no generic green “safe cell” badge.
+
+### Adopt existing work as a job
+
+After the destination's development contract is verified:
+
+```sh
+kuggis adopt /path/to/worktree --cell forecasting --agent pi --brief handoff/HANDOFF.md
+# Review the selected commits and files, then repeat with --apply <printed SHA256>.
+```
+
+The source remote selects the declared project when unambiguous; use
+`--project NAME` to disambiguate. The branch name becomes the job/session name,
+or supply `--session NAME`. The source must have committed tracked changes.
+Only commits after the local `origin/<default-branch>` merge base enter the
+bundle. Untracked files are omitted unless explicitly selected with repeatable
+`--include FILE` or `--brief FILE`. There is no automatic copying of credentials,
+configuration, full transcripts, or experiment directories. Selected files must
+be regular files inside the worktree; symlinks are refused. Review selected
+content for suitability before moving it into a public development cell.
+
+Approval binds the source head, selected commits, artifact bytes, cell policy,
+repo, VM, runtime and job name. Apply verifies destination readiness again. The
+receiver verifies the package hashes, base ancestry and exported head, refuses
+collisions, and imports the branch without running repository code. A repeated
+approved transfer is a no-op. The source remains intact. It creates a durable
+job identity and a first-message handoff, but does not start an agent or call a
+model. Open the printed kuggis command when ready; the first launch creates its
+worktree, runs its existing project setup, and resumes work from the brief.
+
 ### Agent runtimes
 
 ```sh
@@ -126,9 +229,9 @@ Adapter interfaces: [Codex hooks](https://learn.chatgpt.com/docs/hooks),
 
 ### Cell display definitions
 
-This is the first UI step of the cells plan. It reads the existing session
-snapshot, **not a typed event log**, and does not enforce cell isolation or
-crossing rules. ForecastBench, publishing, releases, audit and seal are not
+The UI reads the existing session snapshot and cached development-readiness
+observations, **not a typed event log**, and does not enforce cell isolation or
+crossing rules. ForecastBench, publishing, releases, isolation audits and seal are not
 implemented. Only pending briefs currently produce crossing rows.
 
 Without configuration, familiar project names (or the `airo`/`bigbrain`
