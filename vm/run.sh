@@ -19,25 +19,18 @@ fi
 # A project-local virtualenv (set up by the profile) is active for the agent.
 if [ -f .venv/bin/activate ]; then . .venv/bin/activate; fi
 
-case $agent in
-  codex)
-    cx=~/.codex/config.toml
-    grep -qF "[projects.\"$PWD\"]" "$cx" 2>/dev/null ||
-      printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$PWD" >>"$cx"
-    # Codex rollouts record their cwd; `resume --last` filters by cwd.
-    if grep -rqF "\"cwd\":\"$PWD\"" ~/.codex/sessions 2>/dev/null; then
-      set -- codex resume --last
-    else
-      set -- codex
-    fi ;;
-  *)
-    # Claude keeps transcripts under ~/.claude/projects/<cwd, non-alphanumerics as ->.
-    if ls "$HOME/.claude/projects/$(pwd | sed 's/[^A-Za-z0-9]/-/g')"/*.jsonl >/dev/null 2>&1; then
-      set -- claude --continue
-    else
-      set -- claude -n "$name"
-    fi ;;
-esac
+# Shared lifecycle; agent adapters only choose the executable and resume flags.
+. ~/.box/agents.sh
+export BOX_AGENT=$agent
+export BOX_SESSION_ID=${4:?session identity} BOX_RUN_ID=${5:?run identity}
+delivery_pid=''
+cleanup() {
+  [ -z "$delivery_pid" ] || kill "$delivery_pid" 2>/dev/null || true
+  ~/.box/hook.sh stopped
+}
+trap cleanup EXIT
+agent_command "$agent" "$name" || exit $?
+set -- "${AGENT_COMMAND[@]}"
 
 # A brief from kuggis dispatch is the session's first message, given once.
 first=~/.box/first/$name
@@ -47,7 +40,13 @@ if [ -f "$first" ]; then
   if [ "${1:-} ${2:-}" = "codex resume" ]; then
     # `codex resume --last` reads a trailing argument as a session name, so the
     # brief is typed in once its screen is up.
-    (sleep 8 && tmux send-keys -t "=$name:" -l -- "$msg" && sleep 0.3 && tmux send-keys -t "=$name:" Enter) &
+    same_run() {
+      jq -e --arg id "$BOX_SESSION_ID" --arg run "$BOX_RUN_ID" \
+        '.session_id == $id and .run_id == $run' "$HOME/.box/ids/$name" >/dev/null 2>&1
+    }
+    (sleep 8 && same_run && tmux send-keys -t "=$name:" -l -- "$msg" &&
+      sleep 0.3 && same_run && tmux send-keys -t "=$name:" Enter) &
+    delivery_pid=$!
   else
     set -- "$@" "$msg"
   fi
@@ -55,7 +54,11 @@ fi
 
 "$@"
 rc=$?
+cleanup
+trap - EXIT
 if [ $rc -ne 0 ]; then
   echo "box: $1 exited with $rc; press enter to close the session"
   read -r _
 fi
+
+exit "$rc"

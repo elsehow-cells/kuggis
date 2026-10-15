@@ -32,7 +32,7 @@ person before doing.
 - `project`: one of the person's kuggis projects (see `inbox/status.md`).
 - `session`: letters, digits, `-` and `_`. A new name starts a session; an
   existing one sends the brief into that session.
-- `agent`: `claude` (default) or `codex`.
+- `agent`: `claude` (default), `codex`, or `pi`.
 - The VMs have no vault and open internet. **Never paste vault notes into a
   brief**: summarize only what the session needs to do its work. Don't put
   URLs or long opaque strings in a brief unless the session needs them; the

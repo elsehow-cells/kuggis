@@ -35,9 +35,8 @@ left() {
     name=${f##*/}
     [ "$name" != "$self" ] || continue
     grep -qxF "$name" <<<"$live" || continue
-    [ "$(cat "$AGENT/$name" 2>/dev/null || echo claude)" = claude ] || continue
     st=$(cat "$f")
-    [ "$st" = waiting ] || { [ "$st" = idle ] && [ -f ~/.box/needs/"$name" ]; } || continue
+    [ "$st" = waiting ] || [ -f ~/.box/needs/"$name" ] || continue
     printf ' #[fg=colour16,bg=colour214] ⚑ %s %s #[default]' "$name" "$(ago $((now - $(stat -c %Y "$f"))))"
   done
 }

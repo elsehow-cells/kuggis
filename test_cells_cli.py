@@ -63,6 +63,20 @@ cat >/dev/null''',
         self.assertEqual(calls[0], calls[1])
         self.assertIn("airo-vm.exe.xyz ~/.box/session.sh attach demo codex", calls[0])
 
+    def test_all_agent_flags_route_without_model_or_github_calls(self):
+        for agent in ("claude", "codex", "pi"):
+            for flags in [("--agent", agent), ("--" + agent,)]:
+                result = self.run_cli("forecasting", "demo", *flags)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("session.sh attach demo " + agent, self.log.read_text())
+        self.assertNotIn("forbidden", self.log.read_text())
+
+    def test_unknown_agent_fails_before_network(self):
+        for flags in [("--agent", "oops"), ("--agent",)]:
+            result = self.run_cli("forecasting", "demo", *flags)
+            self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.log.read_text(), "")
+
     def test_done_preserves_work_checks_and_force_is_explicit(self):
         result = self.run_cli("done", "forecasting", "demo")
         self.assertEqual(result.returncode, 0, result.stderr)
