@@ -1,6 +1,6 @@
 # kuggis
 
-Claude Code sessions on exe.dev VMs: one VM per project, one tmux session
+Claude Code, Codex, and Pi sessions on exe.dev VMs: one VM per project, one tmux session
 and git worktree per session. Run `kuggis help` for the commands.
 
 Setup on the laptop, once:
@@ -71,6 +71,59 @@ human review loop.
 Only a page holding the token in `~/.config/kuggis/web.token` can use the API;
 `kuggis web` opens it with that token. The themes are BigBrain's.
 
+### Agent runtimes
+
+```sh
+kuggis forecasting task-a --agent claude
+kuggis forecasting task-b --agent codex
+kuggis forecasting task-c --agent pi
+```
+
+`--claude`, `--codex`, and `--pi` are shorthand. Without a flag, new sessions
+use Claude and existing sessions remember their agent. Exit the current agent
+before switching a session's runtime; its files stay, but each runtime resumes
+its own conversation. Missing executables and unknown names fail explicitly.
+Dispatch briefs accept all three names in `agent:` and refuse to deliver into
+a running session with a different agent.
+
+After syncing, all three receive the same project profile and `needs-you`
+instructions. Claude and Codex hooks, and a Pi extension loaded by the launcher,
+report a common lifecycle. Review Codex's new hooks with `/hooks` on first start;
+untrusted hooks are skipped by Codex. Use a current Codex with lifecycle hooks
+and Pi 1.1+ (the `agent_settled` event). Pi question/permission extensions can
+emit `kuggis:needs-you` with `{why: "question"}` or `{why: "permission"}` on
+`pi.events`; arbitrary third-party dialogs cannot be detected automatically.
+For every runtime, `~/.box/needs-you question|permission|blocked|done "one line"`
+stays visible until the next user prompt. If Codex stays at `starting`, check
+that its hooks are trusted and enabled. Completing a turn alone never pages.
+
+Sync configures the adapters, but does not install agents or change Pi's model,
+provider, or authentication. Pi must already have an approved provider on the
+VM. Switching runtime grants no new repo or credential access. Agent hooks
+report status; they do not enforce cell walls or approve crossings.
+
+Session events are written in shadow mode to `~/.box/events.jsonl`, alongside
+the existing state files. Each line follows `vm/job-event.schema.json`: schema version, persistent VM source
+ID, locked monotonic sequence, stable session ID, per-launch run ID, agent,
+action, and optional reason enum. No prompts, tool payloads, or notification
+text enter the log. Reattaching preserves the session ID; closing and reusing a
+name creates a new one. Late hooks from an earlier run are ignored.
+
+```sh
+kuggis sh forecasting 'python3 -I ~/.box/events.py check'
+```
+
+This read-only diagnostic validates and folds the VM log and compares it to
+the retained state files; it exits nonzero on rejected events or differences.
+Already-running sessions should be restarted after sync to load the adapters.
+The dashboard still reads the compatibility files and checks tmux liveness.
+This is the session portion of the event-log migration: continuous laptop
+transport, the other event types, and retiring old state await the shadow trial.
+
+Adapter interfaces: [Codex hooks](https://learn.chatgpt.com/docs/hooks),
+[Claude hooks](https://code.claude.com/docs/en/hooks), and
+[Pi extensions](https://pi.dev/docs/latest/extensions).
+
 ### Cell display definitions
 
 This is the first UI step of the cells plan. It reads the existing session
@@ -136,10 +189,11 @@ have disturbed VMs that already exist. It's invisible from the laptop.
   reconnecting stops it; detaching (`C-b d`) leaves without reconnecting.
 - **`kuggis` shows a session as `stopped`.** Its process is gone (VM restart, or
   the agent exited). `kuggis <project> <name>` starts it again: the conversation
-  resumes (`claude --continue`, `codex resume --last`) and the worktree's files
+  resumes (`claude --continue`, `codex resume --last`, or Pi’s session history) and the worktree's files
   are as they were. Whatever command was mid-run is lost, and the agent waits
   for you, so tell it to carry on.
-- **`waiting on you`** means a permission prompt or a finished turn. You get an
+- **`waiting on you`** means a question, a permission prompt, or explicit
+  `needs-you`. An ordinary finished turn is idle. You get an
   ntfy ping unless you typed in that session in the last two minutes.
 - **`kuggis done` refuses.** The worktree has uncommitted or unpushed work. Push
   it, or pass `--force` to discard it. This repository ignores Python bytecode

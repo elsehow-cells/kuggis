@@ -7,7 +7,7 @@ REPO=$HOME/${BOX_REPO##*/}
 chmod +x ~/.box/*.sh ~/.box/needs-you ~/.box/git-hooks/*
 
 need=''
-for c in tmux jq git curl; do command -v $c >/dev/null || need="$need $c"; done
+for c in tmux jq git curl python3; do command -v $c >/dev/null || need="$need $c"; done
 if [ -n "$need" ]; then
   sudo apt-get update -qq
   # shellcheck disable=SC2086
@@ -43,23 +43,17 @@ grep -qxF '.claude/worktrees/' "$REPO/.git/info/exclude" 2>/dev/null ||
   echo '.claude/worktrees/' >>"$REPO/.git/info/exclude"
 mkdir -p "$REPO/.claude/worktrees" ~/.box/state ~/.box/needs ~/inbox ~/.claude
 
-# User settings: box owns these keys and the five hook events. The theme
+# User settings: box owns these keys; configure-hooks.py merges its hooks. The theme
 # follows the laptop terminal's light/dark mode.
 s=~/.claude/settings.json
 [ -s "$s" ] || echo '{}' >"$s"
-jq --arg h "$HOME/.box/hook.sh" --arg mode "$BOX_MODE" --argjson prefs "${BOX_CLAUDE_PREFS:-{\}}" '
-  def hook(arg): [{hooks: [{type: "command", command: ($h + " " + arg)}]}];
+jq --arg mode "$BOX_MODE" --argjson prefs "${BOX_CLAUDE_PREFS:-{\}}" '
   del(.apiKeyHelper, .env.ANTHROPIC_BASE_URL, .env.ANTHROPIC_API_KEY)
   | . + $prefs
   | .disableClaudeAiConnectors = true
   | .theme = "auto"
   | .permissions.defaultMode = $mode
   | .permissions.allow = ((.permissions.allow // []) - ["Bash(~/.box/needs-you:*)"] + ["Bash(~/.box/needs-you:*)"])
-  | .hooks.UserPromptSubmit = hook("prompt")
-  | .hooks.PreToolUse = [{matcher: "AskUserQuestion", hooks: hook("waiting")[0].hooks}]
-  | .hooks.PostToolUse = hook("working")
-  | .hooks.Stop = hook("idle")
-  | .hooks.Notification = [{matcher: "permission_prompt|elicitation_dialog", hooks: hook("waiting")[0].hooks}]
 ' "$s" >"$s.tmp" && mv "$s.tmp" "$s"
 
 # Trust is keyed on the main checkout, so this covers every worktree.
@@ -73,15 +67,15 @@ jq --arg r "$REPO" '
   | del(.theme)
 ' "$c" >"$c.tmp" && mv "$c.tmp" "$c"
 
-# Both agents get box's instructions as a marked block appended to their
+# All agents get box's instructions as a marked block appended to their
 # user-level file, below whatever the image put there.
-mkdir -p ~/.codex
+mkdir -p ~/.codex ~/.pi/agent
 block=$(
   sed -e "s#{{REPO}}#$REPO#g" -e "s#{{REPO_SLUG}}#$BOX_REPO#g" -e '/^<!-- \/box -->$/d' ~/.box/CLAUDE.md
   if [ -f ~/.box/profile.md ]; then echo; cat ~/.box/profile.md; fi
   echo '<!-- /box -->'
 )
-for f in ~/.claude/CLAUDE.md ~/.codex/AGENTS.md; do
+for f in ~/.claude/CLAUDE.md ~/.codex/AGENTS.md ~/.pi/agent/AGENTS.md; do
   touch "$f"
   sed -i '/^<!-- box -->$/,/^<!-- \/box -->$/d' "$f"
   if [ -s "$f" ] && [ -n "$(tail -n1 "$f")" ]; then echo >>"$f"; fi
@@ -101,7 +95,6 @@ trusted=$(sed -n 's/^\[projects\."\(.*\)"\]$/\1/p' "$cx" 2>/dev/null || true)
 {
   echo '# box: written by bootstrap.sh; [projects] entries are kept on re-sync'
   echo 'model_provider = "box"'
-  printf 'notify = ["%s", "ping"]\n\n' "$HOME/.box/hook.sh"
   echo '[model_providers.box]'
   echo 'name = "exe.dev codex integration"'
   echo 'base_url = "https://codex.int.exe.xyz/v1"'
@@ -112,6 +105,8 @@ trusted=$(sed -n 's/^\[projects\."\(.*\)"\]$/\1/p' "$cx" 2>/dev/null || true)
   done
 } >"$cx.tmp" && mv "$cx.tmp" "$cx"
 
+python3 -I ~/.box/configure-hooks.py
+
 if [ -f ~/.box/profile.sh ]; then
   . ~/.box/profile.sh
   if type box_setup >/dev/null 2>&1; then
@@ -120,4 +115,7 @@ if [ -f ~/.box/profile.sh ]; then
   fi
 fi
 
-echo "claude $(claude --version 2>/dev/null || echo 'not found'); repo at $REPO"
+for agent in claude codex pi; do
+  echo "$agent: $($agent --version 2>/dev/null || echo 'not installed')"
+done
+echo "repo at $REPO; Codex: review new hooks with /hooks on first start"

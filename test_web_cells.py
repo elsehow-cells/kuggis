@@ -108,6 +108,16 @@ class Cells(unittest.TestCase):
         self.assertEqual(cell["needs_you"], 1)
         self.assertEqual(cell["status"], "1 working · 1 needs you")
 
+    def test_all_runtime_suffixes_preserve_attention_and_attach_command(self):
+        for agent in ("claude", "codex", "pi"):
+            data = copy.deepcopy(SNAPSHOT)
+            data["briefs"] = []
+            data["sessions"][0]["state"] = f"waiting on you (blocked) ({agent})"
+            data["sessions"][1]["state"] = f"idle ({agent})"
+            cell = project(data, self.config)["cells"][1]
+            self.assertEqual(cell["needs_you"], 1)
+            self.assertTrue(cell["rows"][0]["command"].startswith("kuggis forecasting "))
+
 
 class HTTP(unittest.TestCase):
     def setUp(self):

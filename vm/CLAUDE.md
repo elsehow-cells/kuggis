@@ -24,7 +24,7 @@ say so and stop instead of looking for a way in.
   uncommitted or unpushed.
 - **Say when you need the user.** When you stop to ask something, can't
   go on without them, or are done, run
-  `~/.box/needs-you question|blocked|done "one line"` before you end the
+  `~/.box/needs-you question|permission|blocked|done "one line"` before you end the
   turn. That marks the session as waiting on them and pings their phone.
   Don't when you're only waiting on your own work (a run, a build, a
   monitor): end the turn, and carry on when it finishes.

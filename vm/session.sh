@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # VM side of box: list, attach to, and end sessions. A session is a tmux
 # session and a git worktree of the same name under the repo's
-# .claude/worktrees/, plus a state file the Claude hooks keep current.
+# .claude/worktrees/, plus shared lifecycle state and a shadow event log.
 set -euo pipefail
 . ~/.box/config
 . ~/.box/env
+. ~/.box/agents.sh
 
 REPO=$HOME/${BOX_REPO##*/}
 WT=$REPO/.claude/worktrees
 STATE=$HOME/.box/state
-AGENT=$HOME/.box/agent # claude | codex, per session; absent means claude
+AGENT=$HOME/.box/agent # claude | codex | pi, per session; absent means claude
 FIRST=$HOME/.box/first # a first message for a session's next start, read once by run.sh
 NEEDS=$HOME/.box/needs # question|blocked|done, from needs-you, until the user next types
 
@@ -34,14 +35,12 @@ status() {
     name=$(basename "$f")
     if ! alive "$name"; then
       state=stopped
-    elif [ "$(agent_of "$name")" = codex ]; then
-      state=running # Codex reports finished turns only, not working/waiting
     else
       state=$(cat "$f")
-      [ "$state" = idle ] && [ -f "$NEEDS/$name" ] && state="waiting on you ($(cat "$NEEDS/$name"))"
+      [ -f "$NEEDS/$name" ] && state="waiting on you ($(cat "$NEEDS/$name"))"
       [ "$state" = waiting ] && state="waiting on you"
     fi
-    [ "$(agent_of "$name")" = claude ] || state="$state (codex)"
+    [ "$(agent_of "$name")" = claude ] || state="$state ($(agent_of "$name"))"
     printf '%s\t%s\t%s\n' "$name" "$state" "$(ago $((now - $(stat -c %Y "$f"))))"
   done
 }
@@ -70,22 +69,29 @@ ensure_server() {
 
 # Start a session's agent in tmux if it isn't running.
 launch() {
-  local name=$1 want=${2:-} wt=$WT/$1 fresh=0 agent
+  local name=$1 want=${2:-} wt=$WT/$1 fresh=0 agent ids session_id run_id
+  [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || die "bad session name"
+  [ -z "$want" ] || agent_valid "$want" || die "unknown agent $want"
   mkdir -p "$STATE" "$AGENT"
   agent=$(agent_of "$name")
   if alive "$name"; then
     [ -z "$want" ] || [ "$want" = "$agent" ] ||
-      echo "box: $name is already running $agent; attaching to that" >&2
+      die "$name is running $agent; exit that agent before switching to $want"
   else
+    agent=${want:-$agent}
+    agent_check "$agent" || return
     if [ ! -d "$wt" ]; then
       new_worktree "$name" "$wt"
       fresh=1
     fi
-    agent=${want:-$agent}
-    echo "$agent" >"$AGENT/$name"
-    echo starting >"$STATE/$name"
+    ids=$(BOX_SESSION_ID= BOX_RUN_ID= BOX_SESSION="$name" BOX_AGENT="$agent" python3 -I ~/.box/events.py emit starting)
+    read -r session_id run_id <<<"$ids"
     ensure_server
-    tmux new-session -d -s "$name" -c "$wt" "$HOME/.box/run.sh $name $agent $fresh"
+    if ! tmux new-session -d -s "$name" -c "$wt" "$HOME/.box/run.sh $name $agent $fresh $session_id $run_id"; then
+      BOX_SESSION_ID="$session_id" BOX_RUN_ID="$run_id" BOX_SESSION="$name" BOX_AGENT="$agent" \
+        python3 -I ~/.box/events.py emit stopped
+      die "could not start $name"
+    fi
   fi
 }
 
@@ -101,13 +107,16 @@ deliver() {
   local name=$1 want=$2 brief=$3
   local msg="Read $brief: a brief from the Thinker that the owner reviewed and dispatched. Then begin."
   [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || die "bad session name '$name'"
+  agent_valid "$want" || die "unknown agent $want"
   [ -f "$brief" ] || die "no brief at $brief"
   if alive "$name"; then
+    [ "$want" = "$(agent_of "$name")" ] || die "$name is running $(agent_of "$name"), not $want"
     tmux send-keys -t "=$name:" -l -- "$msg"
     sleep 0.3
     tmux send-keys -t "=$name:" Enter
     echo "delivered to running session $name ($(agent_of "$name"))"
   else
+    agent_check "$want" || return
     mkdir -p "$FIRST"
     printf '%s\n' "$msg" >"$FIRST/$name"
     launch "$name" "$want"
@@ -117,6 +126,8 @@ deliver() {
 
 finish() {
   local name=$1 force=${2:-} wt=$WT/$1
+  [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || die "bad session name"
+  [ -z "$force" ] || [ "$force" = --force ] || die "unknown flag $force"
   [ -d "$wt" ] || [ -f "$STATE/$name" ] || die "no session $name"
   if [ -d "$wt" ] && [ "$force" != --force ]; then
     [ -z "$(git -C "$wt" status --porcelain)" ] ||
@@ -133,7 +144,7 @@ finish() {
     git -C "$REPO" worktree remove ${force:+--force} "$wt"
     git -C "$REPO" branch -D "$name" >/dev/null 2>&1 || true
   fi
-  rm -f "$STATE/$name" "$AGENT/$name"
+  BOX_SESSION_ID= BOX_RUN_ID= BOX_SESSION="$name" BOX_AGENT="$(agent_of "$name")" python3 -I ~/.box/events.py emit closed
   echo "done: $name"
 }
 
@@ -142,5 +153,5 @@ case ${1:-} in
   attach) attach "$2" "${3:-}" ;;
   deliver) deliver "$2" "$3" "$4" ;;
   done) finish "$2" "${3:-}" ;;
-  *) die "usage: session.sh status | attach <name> [claude|codex] | deliver <name> <claude|codex> <brief> | done <name> [--force]" ;;
+  *) die "usage: session.sh status | attach <name> [claude|codex|pi] | deliver <name> <claude|codex|pi> <brief> | done <name> [--force]" ;;
 esac

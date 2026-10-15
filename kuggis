@@ -12,9 +12,9 @@
 #                                    PR tools live on /reviews
 #   kuggis dispatch [--status]       review the Thinker's briefs one by one;
 #                                    --status only refreshes what it can read
-#   kuggis <cell> [name] [--codex] [--project NAME]
+#   kuggis <cell> [name] [--agent claude|codex|pi] [--project NAME]
 #                                    attach to a session, starting it if needed;
-#                                    --codex starts Codex instead of Claude
+#                                    --agent chooses the runtime (default: Claude; existing sessions remember)
 #   kuggis done <cell> <name> [--project NAME] [--force]
 #                                    end a session and remove its worktree
 #   kuggis put [cell [session [file]]] [--project NAME]
@@ -101,16 +101,19 @@ cmd_attach() {
       --project) [ $# -ge 2 ] || die "--project needs a name"; selected=$2; shift ;;
       --codex) agent=codex ;;
       --claude) agent=claude ;;
+      --pi) agent=pi ;;
+      --agent) [ $# -ge 2 ] || die "--agent needs claude, codex or pi"; agent=$2; shift ;;
       -*) die "unknown flag $a" ;;
       *)
         if [ -z "$p" ]; then p=$a
         elif [ -z "$name" ]; then name=$a
-        else die "usage: kuggis <cell> [name] [--codex] [--project NAME]"
+        else die "usage: kuggis <cell> [name] [--agent claude|codex|pi] [--project NAME]"
         fi ;;
     esac
     shift
   done
-  [ -n "$p" ] || die "usage: kuggis <cell> [name] [--codex] [--project NAME]"
+  [ -n "$p" ] || die "usage: kuggis <cell> [name] [--agent claude|codex|pi] [--project NAME]"
+  case $agent in ""|claude|codex|pi) ;; *) die "unknown agent '$agent' (claude, codex, pi)" ;; esac
   p=$(resolve_project "$p" "$selected") || return
   host=$(host_of "$p")
   if [ -z "$name" ]; then
@@ -436,7 +439,7 @@ brief_problem() {
   p=$(brief_field "$1" project) s=$(brief_field "$1" session) a=$(brief_field "$1" agent)
   if [ -z "$p" ] || [ -z "$(row "$p")" ]; then echo "project '$p' isn't one of yours: $(projects | tr '\n' ' ')"
   elif ! [[ $s =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then echo "session '$s' isn't a valid name"
-  else case ${a:-claude} in claude | codex) ;; *) echo "agent '$a' isn't claude or codex" ;; esac
+  else case ${a:-claude} in claude | codex | pi) ;; *) echo "agent '$a' isn't claude, codex or pi" ;; esac
   fi
 }
 
@@ -1368,7 +1371,7 @@ case ${1:-home} in
   token) cmd_token ;;
   think) shift; cmd_think "$@" ;;
   help | -h | --help) sed -n '2,/^set -e/p' "$SELF" | sed '$d; s/^# \{0,1\}//' ;;
-  --codex | --claude) cmd_attach "$@" ;;
+  --agent | --pi | --codex | --claude) cmd_attach "$@" ;;
   -*) die "unknown flag $1 (kuggis help)" ;;
   *) cmd_attach "$@" ;;
 esac
