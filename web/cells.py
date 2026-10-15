@@ -1,14 +1,19 @@
-"""Read-only dashboard projection. This is not the cell policy or event fold.
+"""Shared CLI and dashboard cell grouping. Not the cell policy or event fold.
 
 Private display definitions live in $KUGGIS_CONFIG/cells/*.json. Membership
 here groups the UI; it grants no access and does not certify isolation.
 """
 import hashlib
 import json
+import os
 import re
+import sys
+import unicodedata
 from pathlib import Path
 
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+RESERVED = {"operator", "unassigned", "home", "ls", "cells", "cell", "prs", "web",
+            "dispatch", "think", "new", "sync", "sh", "put", "done", "token", "help"}
 ORDER = ("trusted", "forecasting", "merrillfront-dev", "bigbrain-dev",
          "bigbrain-others", "hiring")
 DEFAULTS = {
@@ -16,6 +21,60 @@ DEFAULTS = {
     "merrillfront": "merrillfront-dev", "ibkr-transition": "merrillfront-dev",
     "bigbrain": "bigbrain-dev", "fri-hiring": "hiring",
 }
+
+
+def membership(p, definitions, owners):
+    name = p["name"]
+    if name == "kuggis":
+        return "operator"
+    if name in owners:
+        return owners[name]
+    inferred = DEFAULTS.get(name, DEFAULTS.get(p.get("profile"), "unassigned"))
+    return "unassigned" if inferred in definitions else inferred
+
+
+def inventory(config):
+    path = Path(config) / "vms"
+    projects = []
+    for line in path.read_text().splitlines() if path.exists() else []:
+        fields = line.split()
+        if not fields or fields[0].startswith("#"):
+            continue
+        if len(fields) != 4 or not NAME.fullmatch(fields[0]):
+            raise ValueError("invalid project map row")
+        projects.append({"name": fields[0], "profile": fields[3]})
+    return projects
+
+
+def resolve(config, target, selected=""):
+    projects = inventory(config)
+    definitions, owners = load_definitions(config)
+    names = {p["name"] for p in projects}
+    if target in names and not selected:
+        return target  # Existing project commands keep their meaning.
+    members = [p["name"] for p in projects if membership(p, definitions, owners) == target]
+    if selected:
+        if selected in members or (target == selected and selected in names):
+            return selected
+        raise ValueError(f"project '{selected}' is not in '{target}'")
+    if len(members) == 1:
+        return members[0]
+    if len(members) > 1:
+        raise ValueError(f"cell '{target}' has several projects: {', '.join(sorted(members))}; choose --project <name>")
+    if target in definitions or target in ORDER or target in ("operator", "unassigned"):
+        raise ValueError(f"cell '{target}' has no configured VM projects")
+    raise ValueError(f"unknown cell or project '{target}'; use kuggis cells")
+
+
+def session_command(cell, p, name, projects, mapping, shell=False):
+    if not NAME.fullmatch(p) or (not shell and not NAME.fullmatch(name)):
+        return None
+    target = p if cell in ("operator", "unassigned") else cell
+    # A legacy project with the same name wins without an explicit selector.
+    explicit = target != p and (sum(c == cell for c in mapping.values()) > 1
+                               or any(x["name"] == target for x in projects))
+    command = f"kuggis sh {target}" if shell else f"kuggis {target} {name}"
+    return command + (f" --project {p}" if explicit else "")
 
 
 def load_definitions(config):
@@ -28,7 +87,7 @@ def load_definitions(config):
         name, projects = data.get("cell"), data.get("projects")
         if (type(data.get("version")) is not int or data["version"] != 1
                 or not isinstance(name, str) or not NAME.fullmatch(name)
-                or name != path.stem or name in ("operator", "unassigned")
+                or name != path.stem or name in RESERVED
                 or not isinstance(projects, list)
                 or any(not isinstance(p, str) or not NAME.fullmatch(p) for p in projects)
                 or not isinstance(data.get("definition", {}), dict)):
@@ -56,16 +115,7 @@ def project(snapshot, config):
                            "definition": definitions.get(name), "needs_you": 0}
         return cells[name]
 
-    def membership(p):
-        name = p["name"]
-        if name == "kuggis":
-            return "operator"
-        if name in owners:
-            return owners[name]
-        inferred = DEFAULTS.get(name, DEFAULTS.get(p.get("profile"), "unassigned"))
-        return "unassigned" if inferred in definitions else inferred
-
-    mapping = {p["name"]: membership(p) for p in snapshot["projects"]}
+    mapping = {p["name"]: membership(p, definitions, owners) for p in snapshot["projects"]}
     for name in definitions:
         cell(name)
     for p in snapshot["projects"]:
@@ -87,12 +137,12 @@ def project(snapshot, config):
                 continue
             row = {"id": f"vm:{s['project']}", "kind": "vm", "name": s["project"],
                    "project": s["project"], "state": "unreachable", "age": "",
-                   "needs_you": True, "command": f"kuggis sh {s['project']}"}
+                   "needs_you": True, "command": session_command(name, s["project"], "", snapshot["projects"], mapping, shell=True)}
         else:
             valid = NAME.fullmatch(s["project"]) and NAME.fullmatch(s["name"])
             row = {**s, "id": f"session:{s['project']}/{s['name']}", "kind": "session",
                    "needs_you": s["state"].startswith(("waiting", "stopped")),
-                   "command": f"kuggis {s['project']} {s['name']}" if valid else None}
+                   "command": session_command(name, s["project"], s["name"], snapshot["projects"], mapping) if valid else None}
         cell(name)["rows"].append(row)
 
     for b in sorted(briefs, key=lambda x: x["id"]):
@@ -120,3 +170,75 @@ def project(snapshot, config):
         c["status"] = " · ".join(status) if status else ("no sessions" if not c["rows"] else "quiet")
         result.append(c)
     return {"cells": result, "now": snapshot["now"], "source": "session snapshot"}
+
+
+def safe(text):
+    """A terminal label or TSV field cannot carry controls or extra rows."""
+    return "".join(f"\\u{ord(c):04x}" if unicodedata.category(c).startswith("C") else c for c in str(text))
+
+
+def main():
+    mode, config, *args = sys.argv[1:]
+    if mode == "resolve":
+        print(resolve(config, args[0], args[1] if len(args) > 1 else ""))
+        return
+    if mode in ("inventory", "definition"):
+        snapshot = {"projects": inventory(config), "sessions": [], "now": 0,
+                    "thinker_installed": os.access("/opt/kuggis-thinker/launch", os.X_OK)}
+    else:
+        snapshot = json.load(sys.stdin)
+    cells = project(snapshot, config)["cells"]
+    color = "--color" in args
+    args = [a for a in args if a != "--color"]
+    if args:
+        target = args[0]
+        matches = [c for c in cells if c["name"] == target]
+        if not matches:
+            matches = [dict(c, rows=[r for r in c["rows"] if r["project"] == target])
+                       for c in cells if target in c["projects"]]
+        if not matches:
+            raise ValueError(f"unknown cell or project '{target}'; use kuggis cells")
+        cells = matches
+    for c in cells:
+        if mode == "definition":
+            d = c["definition"]
+            print(safe(c["name"]) + " · not an enforced policy")
+            if d:
+                print(safe(d["source"]) + " · SHA256 " + d["sha256"])
+                # Preserve layout while escaping controls in file content.
+                print("\n".join(safe(line) for line in d["text"].splitlines()))
+            else:
+                print("Inferred grouping; projects: " + ", ".join(c["projects"]))
+        elif mode == "inventory":
+            print(f"{c['name']:<20} {', '.join(c['projects']) or '(no VM projects)'}")
+        else:
+            heading = f"{c['name']} · {c['status']}"
+            if mode == "items":
+                print("\t".join(["cell", safe(heading), c["name"], "-"]))
+            else:
+                print(heading)
+            for r in c["rows"]:
+                dot = "●" if r["needs_you"] else "·"
+                if color and r["needs_you"]:
+                    dot = "\033[31m●\033[0m"
+                who = f"{r['project']}/{r['name']}" if r["project"] else r["name"]
+                age = r["age"]
+                if r.get("since") is not None:
+                    age = f"{max(0, (snapshot['now'] - r['since']) // 60)}m"
+                label = f"  {dot} {safe(who):<32} {safe(r['state'])} {safe(age)}".rstrip()
+                if mode == "items":
+                    kind = r["kind"] if r["command"] else "invalid"
+                    print("\t".join([kind, label, safe(r["project"]), safe(r["name"])]))
+                else:
+                    print(label)
+            if mode != "items":
+                print()
+    if not cells and mode != "items":
+        print("No configured cells or projects")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError) as error:
+        sys.exit("kuggis: " + safe(str(error)))

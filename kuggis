@@ -2,20 +2,22 @@
 # kuggis — Claude Code sessions on exe.dev VMs. One VM per project; one
 # session per name, which is a tmux session plus a git worktree on the VM.
 #
-#   kuggis                           what's waiting on you: the Thinker's briefs,
-#                                    open PRs with its reviews, every session;
-#                                    pick one to dispatch, merge or attach
-#   kuggis ls                        list every session on every VM
+#   kuggis                           cells and sessions; pick one to attach,
+#                                    dispatch a brief, or inspect a definition
+#   kuggis cells                     list cells and their projects
+#   kuggis cell <cell>               inspect a cell's read-only definition
+#   kuggis ls [cell]                 sessions grouped by cell
+#   kuggis prs                       the existing PR review and merge tools
 #   kuggis web                       cells and sessions in your browser;
 #                                    PR tools live on /reviews
 #   kuggis dispatch [--status]       review the Thinker's briefs one by one;
 #                                    --status only refreshes what it can read
-#   kuggis <project> [name] [--codex]
+#   kuggis <cell> [name] [--codex] [--project NAME]
 #                                    attach to a session, starting it if needed;
 #                                    --codex starts Codex instead of Claude
-#   kuggis done <project> <name> [--force]
+#   kuggis done <cell> <name> [--project NAME] [--force]
 #                                    end a session and remove its worktree
-#   kuggis put [project [session [file]]]
+#   kuggis put [cell [session [file]]] [--project NAME]
 #                                    upload a file (default: the clipboard image,
 #                                    else your latest screenshot) to ~/inbox on
 #                                    the VM; types the path into the session if
@@ -24,12 +26,17 @@
 #   kuggis new <project> <owner/repo> [--vm NAME] [--profile NAME]
 #           [--cpu N] [--memory M] [--disk D]
 #                                    create the VM, grant it the repo, set it up
-#   kuggis sync [project]            push scripts, token, settings and secrets
+#   kuggis sync [cell] [--project NAME]
+#                                    push scripts, token, settings and secrets
 #                                    (~/.config/kuggis/secrets/<project>.env) again
-#   kuggis sh <project> [cmd...]     plain ssh to the VM
+#   kuggis sh <cell> [--project NAME] [cmd...]
+#                                    plain ssh to a project's VM
 #   kuggis token                     mint a Claude token into the keychain
 #   kuggis think [--setup|--check]   the Thinker: Claude Code in a contained room
 #                                    on this laptop (think/README.md)
+#
+# Existing project names still work. A cell with multiple projects requires
+# --project NAME. Cell names route commands; they do not enforce isolation.
 set -euo pipefail
 
 CONF=${KUGGIS_CONFIG:-$HOME/.config/kuggis}
@@ -44,6 +51,8 @@ SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o Ser
 die() { echo "kuggis: $*" >&2; exit 1; }
 row() { [ -f "$MAP" ] && awk -v p="$1" '$1 == p' "$MAP" || true; }
 projects() { [ -f "$MAP" ] && awk 'NF && $1 !~ /^#/ { print $1 }' "$MAP" || true; }
+cell_tool() { python3 -I "$HERE/web/cells.py" "$1" "$CONF" "${@:2}"; }
+resolve_project() { cell_tool resolve "$1" "${2:-}"; }
 host_of() {
   local r; r=$(row "$1")
   [ -n "$r" ] || die "unknown project '$1' (projects live in $MAP)"
@@ -79,27 +88,30 @@ sessions_tsv() {
 }
 
 cmd_ls() {
-  [ -n "$(projects)" ] || die "no VMs yet: kuggis new <project> <owner/repo>"
-  { printf 'PROJECT\tSESSION\tSTATE\tAGE\n'; sessions_tsv; } | column -t -s "$(printf '\t')"
-  local n; n=$(pending_briefs | wc -l | tr -d ' ')
-  [ "$n" = 0 ] || echo "$n brief(s) from the Thinker waiting: kuggis dispatch"
+  [ $# -le 1 ] || die "usage: kuggis ls [cell]"
+  if [ -t 1 ]; then web_cells_snapshot | cell_tool list "$@" --color
+  else web_cells_snapshot | cell_tool list "$@"; fi
 }
 
 cmd_attach() {
-  local p='' name='' agent='' a host
-  for a in "$@"; do
+  local p='' name='' agent='' a host selected=''
+  while [ $# -gt 0 ]; do
+    a=$1
     case $a in
+      --project) [ $# -ge 2 ] || die "--project needs a name"; selected=$2; shift ;;
       --codex) agent=codex ;;
       --claude) agent=claude ;;
       -*) die "unknown flag $a" ;;
       *)
         if [ -z "$p" ]; then p=$a
         elif [ -z "$name" ]; then name=$a
-        else die "usage: kuggis <project> [name] [--codex]"
+        else die "usage: kuggis <cell> [name] [--codex] [--project NAME]"
         fi ;;
     esac
+    shift
   done
-  [ -n "$p" ] || die "usage: kuggis <project> [name] [--codex]"
+  [ -n "$p" ] || die "usage: kuggis <cell> [name] [--codex] [--project NAME]"
+  p=$(resolve_project "$p" "$selected") || return
   host=$(host_of "$p")
   if [ -z "$name" ]; then
     # shellcheck disable=SC2046
@@ -127,10 +139,20 @@ cmd_attach() {
 }
 
 cmd_done() {
-  [ $# -ge 2 ] || die "usage: kuggis done <project> <name> [--force]"
-  check_name "$2"
-  case ${3:-} in '' | --force) ;; *) die "unknown flag $3" ;; esac
-  remote "$(host_of "$1")" "~/.box/session.sh done $2 ${3:-}"
+  [ $# -ge 2 ] || die "usage: kuggis done <cell> <name> [--project NAME] [--force]"
+  local p=$1 name=$2 selected='' force=''
+  shift 2
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --project) [ $# -ge 2 ] || die "--project needs a name"; selected=$2; shift ;;
+      --force) force=--force ;;
+      *) die "unknown argument $1" ;;
+    esac
+    shift
+  done
+  check_name "$name"
+  p=$(resolve_project "$p" "$selected") || return
+  remote "$(host_of "$p")" "~/.box/session.sh done $name $force"
 }
 
 # Copy a file to ~/inbox on a VM; print its path there.
@@ -144,18 +166,27 @@ upload() {
 }
 
 cmd_put() {
-  local file='' p='' s='' tmp='' dir path
+  local file='' p='' s='' tmp='' dir path selected='' host args=()
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --project) [ $# -ge 2 ] || die "--project needs a name"; selected=$2; shift ;;
+      *) args+=("$1") ;;
+    esac
+    shift
+  done
+  set -- ${args[@]+"${args[@]}"}
   # Positional, never guessed: a project or session can share a file's name.
-  [ $# -le 3 ] || die "usage: kuggis put [project [session [file]]]"
+  [ $# -le 3 ] || die "usage: kuggis put [cell [session [file]]] [--project NAME]"
   p=${1:-} s=${2:-} file=${3:-}
   [ -z "$file" ] || [ -f "$file" ] || die "no such file: $file"
   if [ -z "$p" ]; then
     # shellcheck disable=SC2046
     set -- $(projects)
-    [ $# -eq 1 ] || die "which project? kuggis put <project> [session [file]]"
+    [ $# -eq 1 ] || die "which cell? kuggis put <cell> [session [file]] [--project NAME]"
     p=$1
   fi
   [ -z "$s" ] || check_name "$s"
+  p=$(resolve_project "$p" "$selected") || return
   host=$(host_of "$p")
   if [ -z "$file" ]; then
     tmp=$(mktemp -d)
@@ -208,7 +239,7 @@ cmd_new() {
   done
   [ -n "$p" ] && [ -n "$repo" ] || die "usage: kuggis new <project> <owner/repo> [--vm NAME] [--profile NAME]"
   [[ $p =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "project names are lowercase letters, digits and -"
-  case $p in ls | new | sync | sh | put | done | token | help) die "'$p' is a kuggis command" ;; esac
+  case $p in home | ls | cells | cell | prs | web | dispatch | think | new | sync | sh | put | done | token | help) die "'$p' is a kuggis command" ;; esac
   [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "repo must be owner/name"
   [ -z "$(row "$p")" ] || die "$p already exists in $MAP"
   vm=${vm:-$p}
@@ -280,12 +311,30 @@ sync_one() {
 }
 
 cmd_sync() {
-  local p
-  if [ $# -gt 0 ]; then sync_one "$1"; else for p in $(projects); do sync_one "$p"; done; fi
+  local p='' selected=''
+  if [ $# -eq 0 ]; then
+    for p in $(projects); do sync_one "$p"; done
+    return
+  fi
+  p=$1; shift
+  if [ "${1:-}" = --project ]; then
+    [ $# -ge 2 ] || die "--project needs a name"
+    selected=$2; shift 2
+  fi
+  [ $# -eq 0 ] || die "usage: kuggis sync [cell] [--project NAME]"
+  p=$(resolve_project "$p" "$selected") || return
+  sync_one "$p"
 }
 
 cmd_sh() {
-  local host; host=$(host_of "$1"); shift
+  local host p=$1 selected=''; shift
+  if [ "${1:-}" = --project ]; then
+    [ $# -ge 2 ] || die "--project needs a name"
+    selected=$2; shift 2
+  fi
+  [ "${1:-}" != -- ] || shift
+  p=$(resolve_project "$p" "$selected") || return
+  host=$(host_of "$p")
   exec ssh -t "${SSH_OPTS[@]}" "$host" "$@"
 }
 
@@ -935,19 +984,78 @@ home_act() { # home_act <item line>
   (room_status >/dev/null 2>&1 &)
 }
 
+cell_items() { web_cells_snapshot | cell_tool items --color; }
+
+cell_preview() {
+  local kind _ p s
+  IFS=$'\t' read -r kind _ p s <<<"$1"
+  case $kind in
+    cell) cell_tool definition "$p" ;;
+    thinker) echo 'kuggis think' ;;
+    door) echo 'kuggis dispatch — review pending briefs before sending them' ;;
+    *) home_preview "$1" ;;
+  esac
+}
+
+cell_act() {
+  local kind _ p s
+  IFS=$'\t' read -r kind _ p s <<<"$1"
+  case $kind in
+    cell) cell_tool definition "$p" ;;
+    thinker) "$HERE/kuggis" think ;;
+    door) cmd_dispatch ;;
+    session) cmd_attach "$p" "$s" ;;
+    vm) "$HERE/kuggis" sh "$p" ;;
+  esac
+}
+
+cmd_cell_home() {
+  local line choice i rows=()
+  while :; do
+    rows=()
+    # Capture first so a broken definition reports its error instead of a
+    # process-substitution failure looking like an empty session list.
+    local items; items=$(cell_items) || return
+    while IFS= read -r line; do [ -z "$line" ] || rows+=("$line"); done <<<"$items"
+    i=0
+    for line in ${rows[@]+"${rows[@]}"}; do
+      i=$((i + 1)); printf '%2d  %s\n' "$i" "$(cut -f2 <<<"$line")"
+    done
+    printf '\npick a number, x<number> to close a session, [r]efresh, [q]uit: '
+    read -r choice || return 0
+    case $choice in
+      q | '') return 0 ;;
+      r) continue ;;
+      x[0-9]*)
+        choice=${choice#x}
+        [[ $choice =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#rows[@]} ] || continue
+        home_close "${rows[$((choice - 1))]}" || true
+        continue ;;
+      *[!0-9]*) continue ;;
+    esac
+    [ "$choice" -ge 1 ] && [ "$choice" -le ${#rows[@]} ] || continue
+    cell_act "${rows[$((choice - 1))]}" || true
+  done
+}
+
 cmd_fzf_home() {
-  local self=$HERE/kuggis dir sock tick
+  local self=$HERE/kuggis dir sock tick mode=${1:-cells} items=_cell_items preview=_cell_preview action=_cell_act
+  local header='enter open · ctrl-x close a session · ctrl-r refresh · esc quit'
+  if [ "$mode" = prs ]; then
+    items=_items preview=_preview action=_act
+    header='enter open · ctrl-t the Thinker reviews a PR · ctrl-x close a session · ctrl-r refresh · esc quit'
+  fi
   dir=$(mktemp -d /tmp/kuggis.XXXXXX) # mode 700, and short: socket paths are capped at 104 bytes
   sock=$dir/home.sock
   FZF_API_KEY=$(openssl rand -hex 16)
   export FZF_API_KEY
-  (room_status >/dev/null 2>&1 &)
+  [ "$mode" != prs ] || (room_status >/dev/null 2>&1 &)
   (
     # Refresh the list and the preview every 15s while fzf runs.
     while sleep 15; do
       [ -S "$sock" ] || continue
       curl -sf --unix-socket "$sock" -XPOST -H "x-api-key: $FZF_API_KEY" http://localhost \
-        -d "reload-sync($self _items)+refresh-preview" >/dev/null || break
+        -d "reload-sync($self $items)+refresh-preview" >/dev/null || break
     done
   ) &
   tick=$!
@@ -955,14 +1063,14 @@ cmd_fzf_home() {
   # shellcheck disable=SC2064 # expand now: these are locals
   trap "kill $tick 2>/dev/null; rm -rf '$dir'" EXIT
   trap 'exit 129' HUP TERM # a closed terminal still cleans up
-  "$self" _items | fzf --ansi --listen="$sock" --delimiter=$'\t' --with-nth=2 --id-nth=1,3,4,5 \
+  "$self" "$items" | fzf --ansi --listen="$sock" --delimiter=$'\t' --with-nth=2 --id-nth=1,3,4,5 \
     --layout=reverse --no-sort --info=hidden --prompt='kuggis › ' \
-    --header='enter open · ctrl-t the Thinker reviews a PR · ctrl-x close a session · ctrl-r refresh · esc quit' \
-    --preview="$self _preview {}" --preview-window='right,60%,wrap' \
-    --bind="enter:execute($self _act {})+reload-sync($self _items)+refresh-preview" \
-    --bind="ctrl-t:execute($self _ask {})+reload-sync($self _items)+refresh-preview" \
-    --bind="ctrl-x:execute($self _close {})+reload-sync($self _items)+refresh-preview" \
-    --bind="ctrl-r:reload-sync($self _items)+refresh-preview" || true
+    --header="$header" \
+    --preview="$self $preview {}" --preview-window='right,60%,wrap' \
+    --bind="enter:execute($self $action {})+reload-sync($self $items)+refresh-preview" \
+    --bind="ctrl-t:execute($self _ask {})+reload-sync($self $items)+refresh-preview" \
+    --bind="ctrl-x:execute($self _close {})+reload-sync($self $items)+refresh-preview" \
+    --bind="ctrl-r:reload-sync($self $items)+refresh-preview" || true
 }
 
 # `kuggis` at a terminal: what's waiting on you in one place. Briefs to review,
@@ -1232,8 +1340,16 @@ case ${1:-home} in
   home)
     if ! [ -t 0 ] || ! [ -t 1 ]; then cmd_ls
     elif command -v fzf >/dev/null; then cmd_fzf_home
-    else cmd_home
+    else cmd_cell_home
     fi ;;
+  cells) [ $# -eq 1 ] || die "usage: kuggis cells"; cell_tool inventory ;;
+  cell) [ $# -eq 2 ] || die "usage: kuggis cell <cell>"; cell_tool definition "$2" ;;
+  prs)
+    if [ -t 0 ] && [ -t 1 ] && command -v fzf >/dev/null; then cmd_fzf_home prs
+    else cmd_home; fi ;;
+  _cell_items) cell_items ;;
+  _cell_preview) cell_preview "$2" ;;
+  _cell_act) cell_act "$2" ;;
   _items) home_items ;;
   _preview) home_preview "$2" ;;
   _act) home_act "$2" ;;
@@ -1242,13 +1358,13 @@ case ${1:-home} in
   _review) review_run "$2" ;;
   _web) shift; web_api "$@" ;;
   web) cmd_web ;;
-  ls) cmd_ls ;;
+  ls) shift; cmd_ls "$@" ;;
   dispatch) shift; cmd_dispatch "$@" ;;
   new) shift; cmd_new "$@" ;;
   sync) shift; cmd_sync "$@" ;;
   done) shift; cmd_done "$@" ;;
   put) shift; cmd_put "$@" ;;
-  sh) shift; [ $# -ge 1 ] || die "usage: kuggis sh <project> [cmd...]"; cmd_sh "$@" ;;
+  sh) shift; [ $# -ge 1 ] || die "usage: kuggis sh <cell> [--project NAME] [cmd...]"; cmd_sh "$@" ;;
   token) cmd_token ;;
   think) shift; cmd_think "$@" ;;
   help | -h | --help) sed -n '2,/^set -e/p' "$SELF" | sed '$d; s/^# \{0,1\}//' ;;

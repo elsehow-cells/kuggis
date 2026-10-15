@@ -49,7 +49,7 @@ class Cells(unittest.TestCase):
         forecasting = result["cells"][1]
         self.assertEqual([r["name"] for r in forecasting["rows"]], ["alpha", "zulu", "brief / task"])
         self.assertEqual(forecasting["status"], "1 working · 2 need you")
-        self.assertEqual(forecasting["rows"][0]["command"], "kuggis airo alpha")
+        self.assertEqual(forecasting["rows"][0]["command"], "kuggis forecasting alpha")
         self.assertEqual(forecasting["rows"][-1]["command"], "kuggis dispatch")
         self.assertEqual(forecasting["rows"][-1]["since"], 1000)
         self.assertTrue(result["cells"][0]["rows"][0]["needs_you"])

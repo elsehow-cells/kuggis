@@ -6,7 +6,7 @@
   "required": ["version", "cell", "projects"],
   "properties": {
     "version": {"const": 1},
-    "cell": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$", "not": {"enum": ["operator", "unassigned"]}},
+    "cell": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$", "not": {"enum": ["operator", "unassigned", "home", "ls", "cells", "cell", "prs", "web", "dispatch", "think", "new", "sync", "sh", "put", "done", "token", "help"]}},
     "projects": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$", "not": {"const": "kuggis"}}},
     "definition": {"type": "object"}
   }
