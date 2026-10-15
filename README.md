@@ -16,25 +16,46 @@ Setup on the laptop, once:
 5. Optional: put an ntfy topic in `~/.config/kuggis/ntfy` and subscribe to it
    on your phone, to get pinged when a session waits on you.
 
-Then `kuggis new <project> <owner/repo>` and `kuggis <project> <session>`.
-`kuggis` on its own shows what's waiting on you: briefs from the Thinker, open
-PRs with its reviews, and every session, with a live preview of the highlighted
-one (a session's current screen). Enter opens it, ctrl-x closes a session
-(`kuggis done`), and the list refreshes itself. Detach from a session with
-`C-b d` to come back to it. Merging a PR offers to close its session.
-ctrl-t on a PR has the Thinker review it in the background (headless, in its
-room, on Opus; `KUGGIS_REVIEW_MODEL` changes that); the row shows it working,
-then its verdict.
+Provision a project's VM with `kuggis new <project> <owner/repo>`. Day to day,
+use cells:
+
+```sh
+kuggis cells                         # cells and their projects
+kuggis ls                            # sessions grouped by cell
+kuggis ls forecasting                # one cell
+kuggis forecasting my-task           # start or resume a session
+kuggis done forecasting my-task      # close it, preserving work checks
+kuggis cell forecasting              # read-only definition
+```
+
+A cell containing several projects requires `--project NAME`, for example
+`kuggis forecasting my-task --project airo`. This also works with `done`,
+`put`, `sync` and `sh`; for `sh`, put the selector before the remote command.
+There is no automatic fan-out or guess about which VM should receive a
+command. `sync` without a target retains its existing all-project behavior.
+Existing project commands such as `kuggis airo my-task` keep working. If a
+project and a cell share a name, the existing project command wins; an
+explicit `--project` selector can target another member of the cell.
+
+`kuggis` on its own shows the same cell groups, session states and pending
+briefs as the web dashboard. Enter attaches to a session, opens the Thinker,
+dispatches pending briefs, or shows a cell definition. Ctrl-x closes a
+session (`kuggis done`), and the list refreshes itself. Opening the cell home
+does not query GitHub or start reviews. Detach with `C-b d` to come back to it.
 It uses [fzf](https://github.com/junegunn/fzf) when installed (`brew install
 fzf`), and a numbered menu otherwise.
+
+`kuggis prs` keeps the previous PR-oriented home screen. Ctrl-t on a PR asks
+the Thinker to review it (on Opus; `KUGGIS_REVIEW_MODEL` changes that).
+Merging a PR offers to close its session.
 
 `kuggis web` opens the cell dashboard on 127.0.0.1:7480
 (`KUGGIS_WEB_PORT` changes it). Cells stay in a fixed order; sessions stay
 alphabetical within their project, even when their state changes. A red dot
 means the session needs you (including a stopped session or an unreachable
 VM). Click a row, or focus it and press Enter, to copy its command. Session
-commands still use the **project** name: `kuggis airo <session>`, not
-`kuggis forecasting <session>`.
+commands use the cell name, adding `--project` when needed. Operator and
+unassigned sessions retain their project commands.
 
 The Thinker appears under trusted when installed or when briefs are pending.
 Pending briefs appear in their destination's cell with their waiting age;
@@ -70,13 +91,15 @@ Optional private display definitions live in
 {"version": 1, "cell": "forecasting", "projects": ["airo", "agent-box"]}
 ```
 
-These small JSON files need no extra dependencies and are **display metadata**,
+These small JSON files need no extra dependencies and are **grouping and routing metadata**,
 separate from the future enforced YAML policy in the plan. Their format is in
 `web/cell-display.schema.json`; an optional `definition` object can hold notes
 to inspect. The dialog shows the exact file and SHA256, never an enforcement
 commit. Explicit membership replaces inference for that cell. Duplicate
-membership, invalid files and attempts to put kuggis inside a cell surface as
-errors. Configured cells remain visible even without sessions. The fixed order
+membership, invalid files, cell names that collide with CLI commands, and
+attempts to put kuggis inside a cell surface as errors. The CLI and web use
+the same membership and validation. Configured cells remain visible even
+without sessions. The fixed order
 is trusted, forecasting, merrillfront-dev, bigbrain-dev, bigbrain-others, hiring,
 then custom cells alphabetically, then operator and unassigned.
 
@@ -119,4 +142,6 @@ have disturbed VMs that already exist. It's invisible from the laptop.
 - **`waiting on you`** means a permission prompt or a finished turn. You get an
   ntfy ping unless you typed in that session in the last two minutes.
 - **`kuggis done` refuses.** The worktree has uncommitted or unpushed work. Push
-  it, or pass `--force` to discard it.
+  it, or pass `--force` to discard it. This repository ignores Python bytecode
+  caches so running its tests does not block session cleanup. On an older
+  worktree, inspect `git status --short` before removing generated caches.

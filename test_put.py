@@ -79,7 +79,7 @@ class PutArgs(unittest.TestCase):
     def test_too_many_arguments(self):
         r, log = self.put("kuggis", "my-session", "notes.md", "extra")
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("usage: kuggis put [project [session [file]]]", r.stderr)
+        self.assertIn("usage: kuggis put [cell [session [file]]]", r.stderr)
         self.assertEqual(log, [])
 
     def test_two_arguments_are_project_and_session(self):

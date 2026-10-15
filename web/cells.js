@@ -26,7 +26,7 @@ function showDefinition(cell) {
 // Only copy the existing CLI's small command vocabulary, never arbitrary
 // commands supplied by a VM or a display definition.
 function validCommand(command) {
-  return typeof command === 'string' && /^(kuggis (think|dispatch)|kuggis sh [A-Za-z0-9][A-Za-z0-9_-]*|kuggis [A-Za-z0-9][A-Za-z0-9_-]* [A-Za-z0-9][A-Za-z0-9_-]*)$/.test(command);
+  return typeof command === 'string' && /^(kuggis (think|dispatch)|kuggis sh [A-Za-z0-9][A-Za-z0-9_-]*( --project [A-Za-z0-9][A-Za-z0-9_-]*)?|kuggis [A-Za-z0-9][A-Za-z0-9_-]* [A-Za-z0-9][A-Za-z0-9_-]*( --project [A-Za-z0-9][A-Za-z0-9_-]*)?)$/.test(command);
 }
 
 async function copyRow(id) {
