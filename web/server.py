@@ -15,13 +15,19 @@ import http.server
 import json
 import os
 import re
+import runpy
 import subprocess
 import sys
 from urllib.parse import parse_qs, urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+project_cells = runpy.run_path(os.path.join(HERE, "cells.py"))["project"]
 ASSETS = {
-    "/": ("index.html", "text/html; charset=utf-8"),
+    "/": ("cells.html", "text/html; charset=utf-8"),
+    "/reviews": ("index.html", "text/html; charset=utf-8"),
+    "/cells.js": ("cells.js", "text/javascript; charset=utf-8"),
+    "/cells.css": ("cells.css", "text/css; charset=utf-8"),
+    "/common.js": ("common.js", "text/javascript; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/app.css": ("app.css", "text/css; charset=utf-8"),
     "/theme.css": ("theme.css", "text/css; charset=utf-8"),
@@ -89,6 +95,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send(409, {"error": err.removeprefix("kuggis: ") or out or "failed"})
         if action:
             return self.send(200, {"message": out})
+        if args == ("cells",):
+            try:
+                config = os.environ.get("KUGGIS_CONFIG", os.path.expanduser("~/.config/kuggis"))
+                return self.send(200, project_cells(json.loads(out), config))
+            except (ValueError, OSError) as e:
+                return self.send(409, {"error": f"Cell definitions: {e}"})
         self.send(200, out.encode())
 
     def do_GET(self):
@@ -107,6 +119,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.send(200, {"kuggis": True})
             if u.path == "/api/state":
                 return self.kuggis("state")
+            if u.path == "/api/cells":
+                return self.kuggis("cells")
             if u.path in ("/api/pr", "/api/log"):
                 return self.kuggis(u.path[5:], *pr_args(q))
         except ValueError as e:
