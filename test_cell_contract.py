@@ -179,6 +179,14 @@ class Contract(unittest.TestCase):
         self.services.protection['required_status_checks']['checks'][0]['app_id']=-1
         self.assertFalse(control.observe(self.policy,self.config,self.services)['demo']['ready'])
 
+    def test_unreachable_vm_remains_incomplete_without_proposing_overwrite(self):
+        with patch.object(self.services,'ssh',side_effect=subprocess.TimeoutExpired('ssh',30)):
+            row=control.audit(self.policy,self.config,self.services)['demo']
+        self.assertFalse(row['ready'])
+        self.assertIn('VM unavailable or probe invalid',row['issues'])
+        self.assertNotIn('sync',row['actions'])
+        self.assertIn('VM unavailable',policy.cached(self.config,self.policy,'demo'))
+
     def test_guard_refuses_incomplete_new_job_but_keeps_live_job_accessible(self):
         import cellctl
         control.atomic_json(self.config/'cells/forecasting.json',self.policy)

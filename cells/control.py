@@ -23,9 +23,9 @@ class Failure(ValueError):
     pass
 
 
-def run(argv, *, data=None, cwd=None):
+def run(argv, *, data=None, cwd=None, timeout=180):
     proc = subprocess.run([str(a) for a in argv], input=data, text=True, capture_output=True,
-                          cwd=cwd, timeout=180)
+                          cwd=cwd, timeout=timeout)
     if proc.returncode:
         # Never include stdin: it may carry an approved private artifact.
         raise Failure(f'{argv[0]} failed: {proc.stderr.strip()[:800]}')
@@ -38,7 +38,7 @@ class Services:
         if body is not None:
             args += ['--input', '-']
         try:
-            out = run(args, data=json.dumps(body) if body is not None else None)
+            out = run(args, data=json.dumps(body) if body is not None else None, timeout=30)
             return json.loads(out) if out.strip() else None
         except Failure as exc:
             if missing and '(HTTP 404)' in str(exc):
@@ -47,10 +47,10 @@ class Services:
 
     def ssh(self, vm, program):
         return json.loads(run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
-                               vm + '.exe.xyz', 'python3 -'], data=program))
+                               vm + '.exe.xyz', 'python3 -'], data=program, timeout=30))
 
     def machines(self):
-        return run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', 'exe.dev', 'ls'])
+        return run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', 'exe.dev', 'ls'], timeout=30)
 
     def local(self, *args):
         return run([ROOT / 'kuggis', *args])
@@ -225,7 +225,7 @@ def observe(policy, config, services):
                 if not good:
                     issues.append('VM adapters, instructions or contract differ')
                     actions.append('sync')
-            except (Failure, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError, OSError, subprocess.TimeoutExpired):
                 issues.append('VM unavailable or probe invalid')
         result['ready'] = not issues
         results[name] = result
