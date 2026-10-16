@@ -43,7 +43,10 @@ class Services:
         self.file_calls = 0
 
     def response(self, data):
-        return {k: {'enabled': v} if isinstance(v, bool) else v for k, v in data.items()}
+        result = {k: {'enabled': v} if isinstance(v, bool) else copy.deepcopy(v) for k, v in data.items()}
+        # GitHub accepts either contexts or checks on PUT; GET returns both.
+        result['required_status_checks']['contexts'] = [c['context'] for c in result['required_status_checks']['checks']]
+        return result
 
     def machines(self):
         return 'demo-dev.exe.xyz'
@@ -96,6 +99,12 @@ class Contract(unittest.TestCase):
         (self.config/'vms').write_text('demo demo-dev example/demo -\n')
         self.policy = definition()
         self.services = Services(self.policy)
+
+    def test_protection_request_uses_only_app_bound_checks_not_legacy_contexts(self):
+        required=control.protection_body(None)['required_status_checks']
+        self.assertNotIn('contexts',required)
+        self.assertEqual(required['checks'],[{'context':name,'app_id':15368} for name in policy.CHECKS])
+        self.assertTrue(control.protection_matches(self.services.protection))
 
     def test_projects_cannot_override_shared_merge_or_spending_policy(self):
         for transform in [lambda p: p['merge'].update(human_approvals=1),

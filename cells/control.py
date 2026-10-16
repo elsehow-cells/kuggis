@@ -257,7 +257,7 @@ def protection_matches(p):
 
 def protection_body(old):
     # Preserve unrelated boolean protections. Never remove access restrictions.
-    body = {'required_status_checks': {'strict': False, 'contexts': CHECKS,
+    body = {'required_status_checks': {'strict': False,
                 'checks': [{'context': name, 'app_id': 15368} for name in CHECKS]}, 'enforce_admins': True,
             'required_pull_request_reviews': {'dismiss_stale_reviews': True, 'require_code_owner_reviews': False,
                                              'required_approving_review_count': 0, 'require_last_push_approval': False},
