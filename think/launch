@@ -50,6 +50,8 @@ if [ -z "${KUGGIS_LAUNCH_DRY:-}" ]; then
   # each to an account that is the owner's.
   export CLAUDE_CODE_OAUTH_TOKEN="$(<"$home/.config/claude-token")"
   if [ -f "$home/.config/secrets.env" ]; then set -a; . "$home/.config/secrets.env"; set +a; fi
+  # pi takes the same Claude subscription token for Anthropic, unless a key is set.
+  [ -n "${ANTHROPIC_API_KEY:-}" ] || export ANTHROPIC_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN
 fi
 
 case $agent in

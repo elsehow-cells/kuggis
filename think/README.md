@@ -61,10 +61,16 @@ door as the one tool with reach. Claude runs restricted with no shell; Codex
 and pi have shells, and the wall is what holds them. Codex's own sandbox
 can't nest inside the wall, so it runs without one; its web search, browser
 and apps are turned off by name. pi's tools are an allowlist by construction.
-Codex and pi run from Homebrew; their provider keys go in
+Codex and pi run from Homebrew, on your subscriptions: `--setup` copies your
+own sign-ins (`~/.codex/auth.json`, `~/.pi/agent/auth.json`) into the room,
+and pi also takes the Claude token for Anthropic. Sign in to Codex or pi as
+yourself once, then rerun `--setup`. A key in
 `~/.config/kuggis/secrets/thinker.env` (`OPENAI_API_KEY=…`,
-`ANTHROPIC_API_KEY=…`), copied into the room by `--setup`. Every key is to
-an account that is yours: the proxy only reaches hosts on `think/hosts`.
+`ANTHROPIC_API_KEY=…`) is the alternative, and wins over a copied login.
+Every account is yours: the proxy only reaches hosts on `think/hosts`, the
+model APIs and their sign-in services. One caveat: the room's copy of a
+login refreshes on its own; if your own Codex ever finds itself signed out,
+sign in again and rerun `--setup`.
 
 ## What holds it
 

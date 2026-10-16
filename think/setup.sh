@@ -73,9 +73,18 @@ if [ -n "$secrets" ] && [ -f "$secrets" ]; then
 else
   rm -f "$home/.config/secrets.env"
 fi
-# The other agents run from Homebrew; the room only needs to be able to run them.
+# The other agents run from Homebrew on the owner's subscriptions: their
+# sign-ins are copied from the owner's own stores into the room, where the
+# agent refreshes them as it would anywhere. (Claude's token is above; pi
+# also takes it for Anthropic. A key in secrets.env wins over a copied login.)
 for a in codex pi; do
-  if sudo -u "$user" test -x "/opt/homebrew/bin/$a"; then echo "agent: $a (kuggis think --agent $a)"; else echo "agent: $a not available to $user"; fi
+  if sudo -u "$user" test -x "/opt/homebrew/bin/$a"; then echo "agent: $a (kuggis think --agent $a)"; else echo "agent: $a not available to $user"; continue; fi
+  case $a in codex) src=/Users/$owner/.codex/auth.json dst=$home/.codex/auth.json ;; pi) src=/Users/$owner/.pi/agent/auth.json dst=$home/.pi/agent/auth.json ;; esac
+  if [ -f "$src" ]; then
+    install -d -o "$user" -g staff -m 700 "$(dirname "$dst")"
+    install -o "$user" -g staff -m 600 "$src" "$dst"
+    echo "  signed in as you ($src → the room)"
+  else echo "  no sign-in at $src: sign in to $a as yourself first, or put a key in secrets.env"; fi
 done
 [ -f "$home/.claude.json" ] || {
   echo '{"hasCompletedOnboarding": true}' >"$home/.claude.json"
