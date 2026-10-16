@@ -634,18 +634,31 @@ room_state() {
 # hosts in think/hosts (plus ~/.config/kuggis/thinker-hosts) and refuses the
 # rest. Started here so the room has a road exactly while kuggis watches.
 PROXY_PORT=${KUGGIS_PROXY_PORT:-4749}
+proxy_pid=''
 start_proxy() {
   ! nc -z 127.0.0.1 "$PROXY_PORT" 2>/dev/null || return 0
   python3 -I "$HERE/think/proxy.py" "$PROXY_PORT" "$HERE/think/hosts" "$CONF/thinker-hosts" &
-  # shellcheck disable=SC2064 # expand now
-  trap "kill $! 2>/dev/null" EXIT
+  proxy_pid=$!
 }
 
 # kuggis watch: keep the room's inbox fresh and carry its requests, every few
-# seconds, until stopped. The cockpit (kuggis think) runs it for you.
+# seconds, until stopped. One watcher at a time: two would carry the same
+# request twice. Every cockpit (kuggis think) starts one; the extras bow out.
 cmd_watch() {
   case ${1:-} in '' | --once) ;; *) die "usage: kuggis watch [--once]" ;; esac
-  [ "${1:-}" = --once ] || start_proxy
+  local pidf=$CONF/watch.pid other
+  if [ "${1:-}" != --once ]; then
+    other=$(cat "$pidf" 2>/dev/null || true)
+    if [ -n "$other" ] && [ "$other" != $$ ] && kill -0 "$other" 2>/dev/null; then
+      echo "kuggis: already watching (pid $other)"
+      return 0
+    fi
+    mkdir -p "$CONF"
+    echo $$ >"$pidf"
+    # shellcheck disable=SC2064 # expand now
+    trap "rm -f '$pidf'; [ -z \"\$proxy_pid\" ] || kill \$proxy_pid 2>/dev/null" EXIT
+    start_proxy
+  fi
   while :; do
     room_state
     carry
@@ -864,10 +877,13 @@ cmd_think() {
 
 # The cockpit: the Thinker's chat, with kuggis watch carrying its requests and
 # the home screen one window over (C-b n) showing what waits for you. The bar
-# turns orange when something does. Without tmux (brew install tmux) the chat
-# runs alone, the watcher behind it.
+# turns orange when something does. One tmux session per agent
+# (thinker-claude, thinker-codex, thinker-pi). Without tmux (brew install
+# tmux) the chat runs alone, the watcher behind it.
 cockpit() {
-  local room=/opt/kuggis-thinker self=$HERE/kuggis
+  local room=/opt/kuggis-thinker self=$HERE/kuggis agent=claude name
+  [ "${1:-}" != --agent ] || agent=${2:-claude}
+  name=thinker-$agent # one cockpit per agent; they share the room and one watcher
   if ! command -v tmux >/dev/null; then
     "$self" watch >"$CONF/watch.log" 2>&1 &
     # shellcheck disable=SC2064 # expand now
@@ -876,15 +892,15 @@ cockpit() {
     sudo -u thinker "$room/launch" "$@"
     return
   fi
-  if ! tmux has-session -t =thinker 2>/dev/null; then
-    tmux new-session -d -s thinker -n chat "sudo -u thinker $room/launch $*"
-    tmux new-window -d -t =thinker -n kuggis "$self"
-    tmux new-window -d -t =thinker -n watch "$self watch"
-    tmux set-option -t =thinker status-interval 5 \; \
-      set-option -t =thinker status-right "#($self _waiting)" \; \
-      set-option -t =thinker status-right-length 40
+  if ! tmux has-session -t "=$name" 2>/dev/null; then
+    tmux new-session -d -s "$name" -n chat "sudo -u thinker $room/launch $*"
+    tmux new-window -d -t "=$name" -n kuggis "$self"
+    tmux new-window -d -t "=$name" -n watch "$self watch"
+    tmux set-option -t "=$name" status-interval 5 \; \
+      set-option -t "=$name" status-right "#($self _waiting)" \; \
+      set-option -t "=$name" status-right-length 40
   fi
-  exec tmux attach-session -t =thinker
+  exec tmux attach-session -t "=$name"
 }
 
 # For the cockpit's bar: how many requests wait for you, loud when any do.
