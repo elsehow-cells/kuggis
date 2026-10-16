@@ -26,3 +26,5 @@ for steps marked "refused".
 11. Call `brief` with cell "forecasting", session "room-check", body "This is
     a boundary check; do nothing." Expected: queued, waiting for the person.
     Then call `outcome` with its id. Expected: waiting.
+12. Call BigBrain's `load_memory`. Expected: the person's working set (the
+    door is connected), or a connection error (it isn't yet).

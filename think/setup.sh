@@ -38,14 +38,20 @@ printf 'PROXY=%s\nBB=%s\n' "${KUGGIS_PROXY_PORT:-4749}" "${BIGBRAIN_API_PORT:-47
 chmod 644 "$room/ports"
 # cron would run the Thinker's jobs outside the wall.
 grep -qx "$user" /usr/lib/cron/cron.deny 2>/dev/null || echo "$user" >>/usr/lib/cron/cron.deny
-# mcp.json: the kuggis door (think/door.py) always; BigBrain's door is added by
-# hand once it's connected, so an existing file keeps its other entries.
-[ -f "$room/mcp.json" ] || install -o root -g wheel -m 644 "$here/mcp.json" "$room/mcp.json"
-/usr/bin/python3 -I - "$room/mcp.json" <<'PY'
+# mcp.json: the room's two doors. kuggis's (think/door.py) over stdio, and
+# BigBrain's over HTTP on loopback, with the Thinker's own credential read at
+# launch from BIGBRAIN_TOKEN in secrets.env (mint it with
+# `bigbrain connect --name Thinker`; no secret sits in this file). Every agent
+# reads this one list: Claude and pi take it as is, Codex gets it converted.
+install -o root -g wheel -m 644 "$here/mcp.json" "$room/mcp.json"
+/usr/bin/python3 -I - "$room/mcp.json" "${BIGBRAIN_API_PORT:-4748}" <<'PY'
 import json, sys
-path = sys.argv[1]
+path, port = sys.argv[1], sys.argv[2]
 data = json.load(open(path))
-data.setdefault("mcpServers", {})["kuggis"] = {"command": "/usr/bin/python3", "args": ["-I", "/opt/kuggis-thinker/door.py", "serve"]}
+data.setdefault("mcpServers", {})
+data["mcpServers"]["kuggis"] = {"command": "/usr/bin/python3", "args": ["-I", "/opt/kuggis-thinker/door.py", "serve"]}
+data["mcpServers"]["bigbrain"] = {"type": "http", "url": f"http://127.0.0.1:{port}/mcp",
+                                  "headers": {"Authorization": "Bearer ${BIGBRAIN_TOKEN}"}}
 json.dump(data, open(path, "w"), indent=2)
 PY
 echo "room: $room ($("$room/claude" --version 2>/dev/null | head -1))"
@@ -67,9 +73,18 @@ if [ -n "$secrets" ] && [ -f "$secrets" ]; then
 else
   rm -f "$home/.config/secrets.env"
 fi
-# The other agents run from Homebrew; the room only needs to be able to run them.
+# The other agents run from Homebrew on the owner's subscriptions: their
+# sign-ins are copied from the owner's own stores into the room, where the
+# agent refreshes them as it would anywhere. (Claude's token is above; pi
+# also takes it for Anthropic. A key in secrets.env wins over a copied login.)
 for a in codex pi; do
-  if sudo -u "$user" test -x "/opt/homebrew/bin/$a"; then echo "agent: $a (kuggis think --agent $a)"; else echo "agent: $a not available to $user"; fi
+  if sudo -u "$user" test -x "/opt/homebrew/bin/$a"; then echo "agent: $a (kuggis think --agent $a)"; else echo "agent: $a not available to $user"; continue; fi
+  case $a in codex) src=/Users/$owner/.codex/auth.json dst=$home/.codex/auth.json ;; pi) src=/Users/$owner/.pi/agent/auth.json dst=$home/.pi/agent/auth.json ;; esac
+  if [ -f "$src" ]; then
+    install -d -o "$user" -g staff -m 700 "$(dirname "$dst")"
+    install -o "$user" -g staff -m 600 "$src" "$dst"
+    echo "  signed in as you ($src → the room)"
+  else echo "  no sign-in at $src: sign in to $a as yourself first, or put a key in secrets.env"; fi
 done
 [ -f "$home/.claude.json" ] || {
   echo '{"hasCompletedOnboarding": true}' >"$home/.claude.json"

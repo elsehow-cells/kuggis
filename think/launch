@@ -14,6 +14,7 @@
 # one tool with reach.
 set -eu
 room=/opt/kuggis-thinker home=/Users/thinker
+[ -z "${KUGGIS_LAUNCH_DRY:-}" ] || room=${KUGGIS_ROOM:-$room} # tests point a dry run at a scratch room
 PROXY=4749 BB=4748
 [ ! -f "$room/ports" ] || . "$room/ports"
 agent=claude
@@ -24,7 +25,23 @@ export HOME=$home USER=thinker LOGNAME=thinker SHELL=/bin/zsh PATH=/usr/bin:/bin
 export TERM=xterm-256color COLORTERM=truecolor LANG=${LANG:-en_US.UTF-8}
 export HTTPS_PROXY=http://127.0.0.1:$PROXY HTTP_PROXY=http://127.0.0.1:$PROXY NO_PROXY=127.0.0.1,localhost
 export DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
-door_cmd=/usr/bin/python3 door_args='["-I","/opt/kuggis-thinker/door.py","serve"]'
+# The room's MCP servers, one list for every agent (mcp.json: the kuggis door
+# and BigBrain's). Claude and pi read that format as is; Codex takes it as
+# -c overrides, with a `Bearer ${VAR}` header becoming its bearer_token_env_var.
+codex_mcp_args() {
+  /usr/bin/python3 -I -c '
+import json, re, sys
+def opt(key, value): print("-c"); print("mcp_servers." + key + "=" + json.dumps(value))
+for name, s in json.load(open(sys.argv[1]))["mcpServers"].items():
+    if "url" in s:
+        opt(name + ".url", s["url"])
+        m = re.fullmatch(r"Bearer \$\{(\w+)\}", (s.get("headers") or {}).get("Authorization", ""))
+        if m: opt(name + ".bearer_token_env_var", m.group(1))
+    else:
+        opt(name + ".command", s["command"])
+        print("-c"); print("mcp_servers." + name + ".args=" + json.dumps(s.get("args", [])))
+' "$room/mcp.json"
+}
 
 if [ -z "${KUGGIS_LAUNCH_DRY:-}" ]; then
   cd "$home/workspace"
@@ -33,6 +50,8 @@ if [ -z "${KUGGIS_LAUNCH_DRY:-}" ]; then
   # each to an account that is the owner's.
   export CLAUDE_CODE_OAUTH_TOKEN="$(<"$home/.config/claude-token")"
   if [ -f "$home/.config/secrets.env" ]; then set -a; . "$home/.config/secrets.env"; set +a; fi
+  # pi takes the same Claude subscription token for Anthropic, unless a key is set.
+  [ -n "${ANTHROPIC_API_KEY:-}" ] || export ANTHROPIC_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN
 fi
 
 case $agent in
@@ -49,17 +68,13 @@ case $agent in
     # off by name; the kuggis door is its MCP server; prompt.md is its AGENTS.md.
     export PATH=/opt/homebrew/bin:$PATH CODEX_HOME=$home/.codex
     [ -n "${KUGGIS_LAUNCH_DRY:-}" ] || { mkdir -p "$CODEX_HOME"; cp "$room/prompt.md" "$CODEX_HOME/AGENTS.md"; }
-    cmd=(codex -C "$home/workspace" -s danger-full-access
-      -c "mcp_servers.kuggis.command=\"$door_cmd\"" -c "mcp_servers.kuggis.args=$door_args"
+    cmd=(codex -C "$home/workspace" -s danger-full-access "${(f)$(codex_mcp_args)}"
       -c 'web_search="disabled"' --disable browser_use --disable browser_use_external --disable apps) ;;
   pi)
     # pi's tools are an allowlist by construction; its MCP servers come from
-    # ~/.pi/agent/mcp.json, rewritten here on every start.
+    # ~/.pi/agent/mcp.json, the room's own list copied there on every start.
     export PATH=/opt/homebrew/bin:$PATH
-    [ -n "${KUGGIS_LAUNCH_DRY:-}" ] || {
-      mkdir -p "$home/.pi/agent"
-      printf '{"mcpServers":{"kuggis":{"command":"%s","args":%s}}}\n' "$door_cmd" "$door_args" >"$home/.pi/agent/mcp.json"
-    }
+    [ -n "${KUGGIS_LAUNCH_DRY:-}" ] || { mkdir -p "$home/.pi/agent"; cp "$room/mcp.json" "$home/.pi/agent/mcp.json"; }
     cmd=(pi --no-extensions --no-skills --no-prompt-templates --no-context-files
       --append-system-prompt "$room/prompt.md") ;;
 esac

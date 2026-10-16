@@ -61,10 +61,16 @@ door as the one tool with reach. Claude runs restricted with no shell; Codex
 and pi have shells, and the wall is what holds them. Codex's own sandbox
 can't nest inside the wall, so it runs without one; its web search, browser
 and apps are turned off by name. pi's tools are an allowlist by construction.
-Codex and pi run from Homebrew; their provider keys go in
+Codex and pi run from Homebrew, on your subscriptions: `--setup` copies your
+own sign-ins (`~/.codex/auth.json`, `~/.pi/agent/auth.json`) into the room,
+and pi also takes the Claude token for Anthropic. Sign in to Codex or pi as
+yourself once, then rerun `--setup`. A key in
 `~/.config/kuggis/secrets/thinker.env` (`OPENAI_API_KEY=…`,
-`ANTHROPIC_API_KEY=…`), copied into the room by `--setup`. Every key is to
-an account that is yours: the proxy only reaches hosts on `think/hosts`.
+`ANTHROPIC_API_KEY=…`) is the alternative, and wins over a copied login.
+Every account is yours: the proxy only reaches hosts on `think/hosts`, the
+model APIs and their sign-in services. One caveat: the room's copy of a
+login refreshes on its own; if your own Codex ever finds itself signed out,
+sign in again and rerun `--setup`.
 
 ## What holds it
 
@@ -94,9 +100,12 @@ kernel; the proxy refuses a host off its list and tunnels to the model API.
   for. It can't follow links inside a page by itself.
 - **Write in its workspace and its outbox**
   (`/Users/thinker/workspace/outbox`, readable by you).
-- Once it's connected, **read the vault and drop into it** through
-  BigBrain's door, with its own token. Until BigBrain serves MCP over HTTP in
-  a release (elsehow/BigBrain#302), the room has no vault.
+- **Read the vault and drop into it** through BigBrain's door, the app's
+  `/mcp` on 127.0.0.1:4748, with its own credential: a Connected Clients
+  connection named Thinker (`bigbrain connect --name Thinker` mints it; its
+  token goes in `~/.config/kuggis/secrets/thinker.env` as `BIGBRAIN_TOKEN`,
+  and `--setup` carries it into the room). It shows on the app's Connected
+  Clients page and is revoked there. Drops land attributed to the Thinker.
 
 A leak that remains: a hostile page offering many links could leak slowly
 through which of them gets fetched. It's low bandwidth, and needs links the
