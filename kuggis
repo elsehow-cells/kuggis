@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# kuggis — Claude Code sessions on exe.dev VMs. One VM per project; one
+# kuggis — Coding agent sessions on exe.dev VMs. One VM per project; one
 # session per name, which is a tmux session plus a git worktree on the VM.
 #
 #   kuggis                           cells and sessions; pick one to attach,
 #                                    dispatch a brief, or inspect a definition
+#   kuggis onboard --policy FILE     preview a complete development-cell setup
+#   kuggis reconcile <cell>          preview repairs; --apply HASH approves that plan
+#   kuggis audit <cell>              verify development readiness and record drift
+#   kuggis adopt PATH --cell CELL    preview importing a committed job; --apply HASH transfers
 #   kuggis cells                     list cells and their projects
 #   kuggis cell <cell>               inspect a cell's read-only definition
 #   kuggis ls [cell]                 sessions grouped by cell
@@ -126,6 +130,7 @@ cmd_attach() {
     esac
   fi
   check_name "$name"
+  python3 -I "$HERE/cellctl.py" guard "$p" "$name" || return
   # ssh exits 255 when the connection drops (sleep, network change, `~.`).
   # Once a session has been up a while, keep reattaching until it comes back;
   # a first attempt that fails fast is a real error and ends here.
@@ -242,7 +247,7 @@ cmd_new() {
   done
   [ -n "$p" ] && [ -n "$repo" ] || die "usage: kuggis new <project> <owner/repo> [--vm NAME] [--profile NAME]"
   [[ $p =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "project names are lowercase letters, digits and -"
-  case $p in home | ls | cells | cell | prs | web | dispatch | think | new | sync | sh | put | done | token | help) die "'$p' is a kuggis command" ;; esac
+  case $p in home | ls | cells | cell | prs | web | dispatch | think | new | sync | sh | put | done | token | help | onboard | reconcile | audit | adopt) die "'$p' is a kuggis command" ;; esac
   [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "repo must be owner/name"
   [ -z "$(row "$p")" ] || die "$p already exists in $MAP"
   vm=${vm:-$p}
@@ -256,8 +261,8 @@ cmd_new() {
   echo "creating VM ${vm}…"
   remote exe.dev "new --name=$vm --tag=box --no-email --comment=box:$repo ${extra[*]+${extra[*]}}"
   echo "granting $vm access to ${repo}…"
-  # As exe.dev's bot, not as you: with main protected, the VM can push branches
-  # and open PRs but can't approve or merge its own.
+  # As exe.dev's scoped bot, not as you. The cell contract determines which
+  # checks and reviews must pass before GitHub allows it to merge.
   remote exe.dev "integrations add github --name=gh-$vm --repository=$repo --attach=vm:$vm"
   # Shut the VM's outbound email gateway: a box must not be able to mail anyone,
   # owner included (no phishing channel). Inbound was already off (--no-email).
@@ -276,6 +281,10 @@ sync_one() {
   [ -n "$r" ] || die "unknown project '$p'"
   read -r _ vm repo profile <<<"$r"
   host=$vm.exe.xyz
+  # Validate policy ownership before changing anything on the destination.
+  local cell_contract cell_notes
+  cell_contract=$(python3 -I "$HERE/cellctl.py" export "$p" contract) || return
+  cell_notes=$(python3 -I "$HERE/cellctl.py" export "$p" instructions) || return
   echo "syncing $p ($host)…"
   COPYFILE_DISABLE=1 tar --no-xattrs -C "$HERE/vm" -cf - . |
     remote "$host" 'mkdir -p ~/.box && tar -C ~/.box -xf - 2>/dev/null'
@@ -310,6 +319,13 @@ sync_one() {
     printf 'BOX_CLAUDE_PREFS=%q\n' "$(jq -c '{model, effortLevel, alwaysThinkingEnabled}
       | with_entries(select(.value != null))' ~/.claude/settings.json 2>/dev/null || echo '{}')"
   } | remote "$host" 'cat >~/.box/config'
+  # Derive VM policy and instructions from the single private cell contract.
+  if [ -n "$cell_contract" ]; then
+    printf '%s\n' "$cell_contract" | remote "$host" 'cat >~/.box/cell-contract.json'
+    printf '%s\n' "$cell_notes" | remote "$host" 'cat >~/.box/cell-instructions.md'
+  else
+    remote "$host" 'rm -f ~/.box/cell-contract.json ~/.box/cell-instructions.md'
+  fi
   remote "$host" 'bash ~/.box/bootstrap.sh'
 }
 
@@ -426,6 +442,7 @@ log_brief() { # log_brief <decision> <brief> <target>
 dispatch_brief() { # dispatch_brief <file> <project> <session> <agent>
   local host dest
   host=$(host_of "$2")
+  python3 -I "$HERE/cellctl.py" guard "$2" "$3" || return
   # </dev/null throughout: ssh would otherwise read the keys meant for the next brief.
   remote "$host" 'grep -q "^  deliver)" ~/.box/session.sh' </dev/null ||
     die "$2's VM predates dispatch: kuggis sync $2"
@@ -995,6 +1012,7 @@ cell_preview() {
   case $kind in
     cell) cell_tool definition "$p" ;;
     thinker) echo 'kuggis think' ;;
+    setup) echo "kuggis audit $p" ;;
     door) echo 'kuggis dispatch — review pending briefs before sending them' ;;
     *) home_preview "$1" ;;
   esac
@@ -1006,6 +1024,7 @@ cell_act() {
   case $kind in
     cell) cell_tool definition "$p" ;;
     thinker) "$HERE/kuggis" think ;;
+    setup) python3 -I "$HERE/cellctl.py" audit "$p" ;;
     door) cmd_dispatch ;;
     session) cmd_attach "$p" "$s" ;;
     vm) "$HERE/kuggis" sh "$p" ;;
@@ -1340,6 +1359,7 @@ cmd_think() {
 }
 
 case ${1:-home} in
+  onboard | reconcile | audit | adopt) exec python3 -I "$HERE/cellctl.py" "$@" ;;
   home)
     if ! [ -t 0 ] || ! [ -t 1 ]; then cmd_ls
     elif command -v fzf >/dev/null; then cmd_fzf_home

@@ -4,7 +4,7 @@
 set -euo pipefail
 . ~/.box/config
 REPO=$HOME/${BOX_REPO##*/}
-chmod +x ~/.box/*.sh ~/.box/needs-you ~/.box/git-hooks/*
+chmod +x ~/.box/*.sh ~/.box/pr-gate.py ~/.box/needs-you ~/.box/git-hooks/*
 
 need=''
 for c in tmux jq git curl python3; do command -v $c >/dev/null || need="$need $c"; done
@@ -73,6 +73,7 @@ mkdir -p ~/.codex ~/.pi/agent
 block=$(
   sed -e "s#{{REPO}}#$REPO#g" -e "s#{{REPO_SLUG}}#$BOX_REPO#g" -e '/^<!-- \/box -->$/d' ~/.box/CLAUDE.md
   if [ -f ~/.box/profile.md ]; then echo; cat ~/.box/profile.md; fi
+  if [ -f ~/.box/cell-instructions.md ]; then echo; cat ~/.box/cell-instructions.md; fi
   echo '<!-- /box -->'
 )
 for f in ~/.claude/CLAUDE.md ~/.codex/AGENTS.md ~/.pi/agent/AGENTS.md; do
