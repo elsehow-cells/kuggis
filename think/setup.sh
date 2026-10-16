@@ -86,6 +86,13 @@ for a in codex pi; do
     echo "  signed in as you ($src → the room)"
   else echo "  no sign-in at $src: sign in to $a as yourself first, or put a key in secrets.env"; fi
 done
+# pi's own model catalogue (custom providers and their keys) comes along too;
+# a provider's host must also be on the proxy's list (~/.config/kuggis/thinker-hosts).
+if [ -f "/Users/$owner/.pi/agent/models.json" ]; then
+  install -d -o "$user" -g staff -m 700 "$home/.pi/agent"
+  install -o "$user" -g staff -m 600 "/Users/$owner/.pi/agent/models.json" "$home/.pi/agent/models.json"
+  echo "  pi models.json → the room ($(/usr/bin/python3 -I -c 'import json,sys; print(", ".join(json.load(open(sys.argv[1])).get("providers",{})))' "$home/.pi/agent/models.json"))"
+fi
 [ -f "$home/.claude.json" ] || {
   echo '{"hasCompletedOnboarding": true}' >"$home/.claude.json"
   chown "$user:staff" "$home/.claude.json"; chmod 600 "$home/.claude.json"
