@@ -83,6 +83,9 @@ class Services:
         self.mutations.append(args)
         self.vm_bad = False
 
+    def open_setup_pr(self, project, body):
+        return self.api('repos/' + project['repo'] + '/pulls', 'POST', body)
+
 
 class Contract(unittest.TestCase):
     def setUp(self):
@@ -224,14 +227,27 @@ class Contract(unittest.TestCase):
             if '/contents/' in path: return existing[path.split('/contents/')[1].split('?')[0]]
             if '/pulls?' in path: return prs
             raise AssertionError(path)
-        with patch.object(self.services,'api',side_effect=api):
+        with patch.object(self.services,'api',side_effect=api), \
+             patch.object(self.services,'open_setup_pr',wraps=self.services.open_setup_pr) as bot:
             first=control.workflow_pr(self.services,p,wanted,self.services.head,expected)
             count=len(writes)
             self.assertEqual(first,control.workflow_pr(self.services,p,wanted,self.services.head,expected))
             self.assertEqual(count,len(writes))
+            bot.assert_called_once()
+            self.assertEqual(bot.call_args.args[0],p)
             existing[control.WORKFLOW]={'sha':'d'*40,'content':base64.b64encode(b'unreviewed').decode()}
             with self.assertRaisesRegex(ValueError,'unreviewed'):
                 control.workflow_pr(self.services,p,wanted,self.services.head,expected)
+
+    def test_setup_pr_uses_scoped_vm_identity_without_operator_credentials(self):
+        body={'title':'Setup','body':'Review this setup','head':'setup','base':'main'}
+        with patch.object(control,'run',return_value='{"html_url":"https://github.com/example/demo/pull/1"}') as run:
+            result=control.Services().open_setup_pr(self.services.project,body)
+        argv=run.call_args.args[0]
+        self.assertEqual(argv[-2],'demo-dev.exe.xyz')
+        self.assertEqual(argv[-1],'env GH_HOST=github.int.exe.xyz gh api repos/example/demo/pulls --method POST --input -')
+        self.assertEqual(json.loads(run.call_args.kwargs['data']),body)
+        self.assertTrue(result['html_url'].endswith('/pull/1'))
 
     def test_dashboard_incomplete_expired_and_changed_policy(self):
         control.atomic_json(self.config/'cells/forecasting.json', self.policy)
