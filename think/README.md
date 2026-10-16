@@ -94,9 +94,12 @@ kernel; the proxy refuses a host off its list and tunnels to the model API.
   for. It can't follow links inside a page by itself.
 - **Write in its workspace and its outbox**
   (`/Users/thinker/workspace/outbox`, readable by you).
-- Once it's connected, **read the vault and drop into it** through
-  BigBrain's door, with its own token. Until BigBrain serves MCP over HTTP in
-  a release (elsehow/BigBrain#302), the room has no vault.
+- **Read the vault and drop into it** through BigBrain's door, the app's
+  `/mcp` on 127.0.0.1:4748, with its own credential: a Connected Clients
+  connection named Thinker (`bigbrain connect --name Thinker` mints it; its
+  token goes in `~/.config/kuggis/secrets/thinker.env` as `BIGBRAIN_TOKEN`,
+  and `--setup` carries it into the room). It shows on the app's Connected
+  Clients page and is revoked there. Drops land attributed to the Thinker.
 
 A leak that remains: a hostile page offering many links could leak slowly
 through which of them gets fetched. It's low bandwidth, and needs links the
