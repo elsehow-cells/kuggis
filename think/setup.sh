@@ -86,12 +86,31 @@ for a in codex pi; do
     echo "  signed in as you ($src → the room)"
   else echo "  no sign-in at $src: sign in to $a as yourself first, or put a key in secrets.env"; fi
 done
-# pi's own model catalogue (custom providers and their keys) comes along too;
-# a provider's host must also be on the proxy's list (~/.config/kuggis/thinker-hosts).
+# pi's own model catalogue (custom providers) comes along too. A provider whose
+# key is a `!command` (your keychain) can't run that in the room: its key is
+# read instead from <PROVIDER>_API_KEY in secrets.env, which pi expands from
+# `${PROVIDER_API_KEY}`. The provider's host must also be on the proxy's list
+# (~/.config/kuggis/thinker-hosts).
 if [ -f "/Users/$owner/.pi/agent/models.json" ]; then
   install -d -o "$user" -g staff -m 700 "$home/.pi/agent"
-  install -o "$user" -g staff -m 600 "/Users/$owner/.pi/agent/models.json" "$home/.pi/agent/models.json"
-  echo "  pi models.json → the room ($(/usr/bin/python3 -I -c 'import json,sys; print(", ".join(json.load(open(sys.argv[1])).get("providers",{})))' "$home/.pi/agent/models.json"))"
+  /usr/bin/python3 -I - "/Users/$owner/.pi/agent/models.json" "$home/.pi/agent/models.json" "${secrets:-/dev/null}" <<'PY'
+import json, re, sys
+src, dst, secrets = sys.argv[1:4]
+data = json.load(open(src))
+have = set(re.findall(r"^([A-Z_][A-Z0-9_]*)=.+$", open(secrets).read(), re.M)) if secrets != "/dev/null" else set()
+notes = []
+for name, p in (data.get("providers") or {}).items():
+    key = p.get("apiKey", "")
+    if isinstance(key, str) and key.startswith("!"):
+        var = re.sub(r"[^A-Z0-9]", "_", name.upper()) + "_API_KEY"
+        p["apiKey"] = "${" + var + "}"
+        notes.append(f"{name}: key from {var} in secrets.env" + ("" if var in have else " (MISSING: add it and rerun --setup)"))
+    else:
+        notes.append(name)
+json.dump(data, open(dst, "w"), indent=1)
+print("  pi models.json → the room: " + "; ".join(notes))
+PY
+  chown "$user:staff" "$home/.pi/agent/models.json"; chmod 600 "$home/.pi/agent/models.json"
 fi
 [ -f "$home/.claude.json" ] || {
   echo '{"hasCompletedOnboarding": true}' >"$home/.claude.json"
