@@ -36,9 +36,10 @@
 #   kuggis sh <cell> [--project NAME] [cmd...]
 #                                    plain ssh to a project's VM
 #   kuggis token                     mint a Claude token into the keychain
-#   kuggis think [--setup|--check|--agent claude|codex|pi]
+#   kuggis think [--setup|--check|--agent claude|codex|pi] [--name N]
 #                                    the Thinker: an agent in a contained room on
-#                                    this laptop, with kuggis watch (think/README.md)
+#                                    this laptop, with kuggis watch; --name opens
+#                                    another cockpit of the same agent (think/README.md)
 #
 # Existing project names still work. A cell with multiple projects requires
 # --project NAME. Cell names route commands; they do not enforce isolation.
@@ -877,13 +878,21 @@ cmd_think() {
 
 # The cockpit: the Thinker's chat, with kuggis watch carrying its requests and
 # the home screen one window over (C-b n) showing what waits for you. The bar
-# turns orange when something does. One tmux session per agent
-# (thinker-claude, thinker-codex, thinker-pi). Without tmux (brew install
-# tmux) the chat runs alone, the watcher behind it.
-cockpit() {
-  local room=/opt/kuggis-thinker self=$HERE/kuggis agent=claude name
-  [ "${1:-}" != --agent ] || agent=${2:-claude}
-  name=thinker-$agent # one cockpit per agent; they share the room and one watcher
+# turns orange when something does. One tmux session per agent and --name
+# (thinker-claude, thinker-pi, thinker-pi-research). Quit the agent and the
+# next kuggis think starts a fresh one in the same cockpit. Without tmux
+# (brew install tmux) the chat runs alone, the watcher behind it.
+cockpit() { # cockpit [--agent A] [--name N] [agent flags...]
+  local room=/opt/kuggis-thinker self=$HERE/kuggis agent=claude label='' name
+  while :; do
+    case ${1:-} in
+      --agent) agent=${2:?--agent needs claude, codex or pi}; shift 2 ;;
+      --name) label=${2:?--name needs a name}; check_name "$label"; shift 2 ;;
+      *) break ;;
+    esac
+  done
+  name=thinker-$agent${label:+-$label} # one cockpit per agent and name; all share the room and one watcher
+  set -- --agent "$agent" "$@"
   if ! command -v tmux >/dev/null; then
     "$self" watch >"$CONF/watch.log" 2>&1 &
     # shellcheck disable=SC2064 # expand now
@@ -899,6 +908,9 @@ cockpit() {
     tmux set-option -t "=$name" status-interval 5 \; \
       set-option -t "=$name" status-right "#($self _waiting)" \; \
       set-option -t "=$name" status-right-length 40
+  elif ! tmux list-windows -t "=$name" -F '#W' | grep -qx chat; then
+    # the agent was quit (to pick up new settings, say): a fresh one, same cockpit
+    tmux new-window -t "=$name" -n chat "sudo -u thinker $room/launch $*"
   fi
   exec tmux attach-session -t "=$name"
 }
