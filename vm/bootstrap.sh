@@ -44,16 +44,20 @@ grep -qxF '.claude/worktrees/' "$REPO/.git/info/exclude" 2>/dev/null ||
 mkdir -p "$REPO/.claude/worktrees" ~/.box/state ~/.box/needs ~/inbox ~/.claude
 
 # User settings: box owns these keys; configure-hooks.py merges its hooks. The theme
-# follows the laptop terminal's light/dark mode.
+# follows the laptop terminal's light/dark mode. Box's own helpers are allowed
+# outright: needs-you so a page never waits on a prompt, and the cell gate because
+# Claude's auto mode otherwise refuses an author's gated merge as self-approval.
+# The gate enforces the contract itself and refuses without one.
 s=~/.claude/settings.json
 [ -s "$s" ] || echo '{}' >"$s"
-jq --arg mode "$BOX_MODE" --argjson prefs "${BOX_CLAUDE_PREFS:-{\}}" '
+jq --arg mode "$BOX_MODE" --argjson prefs "${BOX_CLAUDE_PREFS:-{\}}" \
+  --argjson box '["Bash(~/.box/needs-you:*)", "Bash(~/.box/pr-gate.py:*)"]' '
   del(.apiKeyHelper, .env.ANTHROPIC_BASE_URL, .env.ANTHROPIC_API_KEY)
   | . + $prefs
   | .disableClaudeAiConnectors = true
   | .theme = "auto"
   | .permissions.defaultMode = $mode
-  | .permissions.allow = ((.permissions.allow // []) - ["Bash(~/.box/needs-you:*)"] + ["Bash(~/.box/needs-you:*)"])
+  | .permissions.allow = ((.permissions.allow // []) - $box + $box)
 ' "$s" >"$s.tmp" && mv "$s.tmp" "$s"
 
 # Trust is keyed on the main checkout, so this covers every worktree.
