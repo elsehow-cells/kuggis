@@ -18,10 +18,11 @@ say so and stop instead of looking for a way in.
 - **Uploads land in `~/inbox`.** When the user pastes a path from there,
   read it.
 - **Finishing.** Push the branch and open a PR, then tell the user it's
-  ready. You act on GitHub as exe.dev's bot and `main` requires the user's
-  approval, so you can't merge it; don't look for a way around that. The
-  user ends the session with `kuggis done`, which refuses while work is
-  uncommitted or unpushed.
+  ready. You act on GitHub as exe.dev's bot. Unless a "Cell contract" block
+  below gives you a merge path, `main` requires the user's approval, so you
+  can't merge it; don't look for a way around that. The user ends the
+  session with `kuggis done`, which refuses while work is uncommitted or
+  unpushed.
 - **Say when you need the user.** When you stop to ask something, can't
   go on without them, or are done, run
   `~/.box/needs-you question|permission|blocked|done "one line"` before you end the
